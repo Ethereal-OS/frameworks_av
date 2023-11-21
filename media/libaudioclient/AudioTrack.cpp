@@ -1793,21 +1793,13 @@ audio_io_handle_t AudioTrack::getOutput() const
 
 status_t AudioTrack::setOutputDevice(audio_port_handle_t deviceId) {
     AutoMutex lock(mLock);
-    ALOGV("%s(%d): deviceId=%d mSelectedDeviceId=%d mRoutedDeviceId %d",
-            __func__, mPortId, deviceId, mSelectedDeviceId, mRoutedDeviceId);
+    ALOGV("%s(%d): deviceId=%d mSelectedDeviceId=%d",
+            __func__, mPortId, deviceId, mSelectedDeviceId);
     if (mSelectedDeviceId != deviceId) {
         mSelectedDeviceId = deviceId;
-        if (mStatus == NO_ERROR && mSelectedDeviceId != mRoutedDeviceId) {
-            if (isPlaying_l()) {
-                android_atomic_or(CBLK_INVALID, &mCblk->mFlags);
-                mProxy->interrupt();
-            } else {
-                // if the track is idle, try to restore now and
-                // defer to next start if not possible
-                if (restoreTrack_l("setOutputDevice") != OK) {
-                    android_atomic_or(CBLK_INVALID, &mCblk->mFlags);
-                }
-            }
+        if (mStatus == NO_ERROR) {
+            android_atomic_or(CBLK_INVALID, &mCblk->mFlags);
+            mProxy->interrupt();
         }
     }
     return NO_ERROR;

@@ -141,7 +141,6 @@ public:
     virtual binder::Status     connect(const sp<hardware::ICameraClient>& cameraClient,
             int32_t cameraId, const String16& clientPackageName,
             int32_t clientUid, int clientPid, int targetSdkVersion,
-            bool overrideToPortrait, bool forceSlowJpegMode,
             /*out*/
             sp<hardware::ICamera>* device);
 
@@ -345,13 +344,6 @@ public:
         // Set Camera service watchdog
         virtual status_t setCameraServiceWatchdog(bool enabled) = 0;
 
-        // Set stream use case overrides
-        virtual void setStreamUseCaseOverrides(
-                const std::vector<int64_t>& useCaseOverrides) = 0;
-
-        // Clear stream use case overrides
-        virtual void clearStreamUseCaseOverrides() = 0;
-
         // The injection camera session to replace the internal camera
         // session.
         virtual status_t injectCamera(const String8& injectedCamId,
@@ -503,7 +495,6 @@ public:
         virtual bool canCastToApiClient(apiLevel level) const;
 
         void setImageDumpMask(int /*mask*/) { }
-        void setStreamUseCaseOverrides(const std::vector<int64_t>& /*usecaseOverrides*/) { }
     protected:
         // Initialized in constructor
 
@@ -854,7 +845,6 @@ private:
             int api1CameraId, const String16& clientPackageNameMaybe, bool systemNativeClient,
             const std::optional<String16>& clientFeatureId, int clientUid, int clientPid,
             apiLevel effectiveApiLevel, bool shimUpdateOnly, int scoreOffset, int targetSdkVersion,
-            bool overrideToPortrait, bool forceSlowJpegMode,
             /*out*/sp<CLIENT>& device);
 
     // Lock guarding camera service state
@@ -1219,12 +1209,6 @@ private:
     // Set the camera mute state
     status_t handleSetCameraMute(const Vector<String16>& args);
 
-    // Set the stream use case overrides
-    status_t handleSetStreamUseCaseOverrides(const Vector<String16>& args);
-
-    // Clear the stream use case overrides
-    status_t handleClearStreamUseCaseOverrides();
-
     // Handle 'watch' command as passed through 'cmd'
     status_t handleWatchCommand(const Vector<String16> &args, int inFd, int outFd);
 
@@ -1276,8 +1260,7 @@ private:
             const String8& cameraId, int api1CameraId, int facing, int sensorOrientation,
             int clientPid, uid_t clientUid, int servicePid,
             std::pair<int, IPCTransport> deviceVersionAndIPCTransport, apiLevel effectiveApiLevel,
-            bool overrideForPerfClass, bool overrideToPortrait, bool forceSlowJpegMode,
-            /*out*/sp<BasicClient>* client);
+            bool overrideForPerfClass, /*out*/sp<BasicClient>* client);
 
     status_t checkCameraAccess(const String16& opPackageName);
 
@@ -1320,9 +1303,6 @@ private:
 
     // Camera Service watchdog flag
     bool mCameraServiceWatchdogEnabled = true;
-
-    // Current stream use case overrides
-    std::vector<int64_t> mStreamUseCaseOverrides;
 
     /**
      * A listener class that implements the IBinder::DeathRecipient interface

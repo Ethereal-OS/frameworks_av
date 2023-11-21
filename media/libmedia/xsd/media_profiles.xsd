@@ -49,7 +49,6 @@
             </xs:element>
         </xs:choice>
         <xs:attribute name="cameraId" type="xs:int"/>
-        <xs:attribute name="startOffsetMs" type="xs:int"/>
     </xs:complexType>
     <xs:complexType name="EncoderProfile">
         <xs:sequence>

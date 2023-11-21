@@ -16,9 +16,8 @@
 
 #include <gtest/gtest.h>
 
+#include "QuaternionUtil.h"
 #include "StillnessDetector.h"
-
-#include "media/QuaternionUtil.h"
 #include "TestUtil.h"
 
 namespace android {

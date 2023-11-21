@@ -109,9 +109,9 @@ private:
     void allocate(const sp<MediaCodecInfo> &codecInfo);
     void configure(const sp<AMessage> &msg);
     void start();
-    void stop(bool pushBlankBuffer);
+    void stop();
     void flush();
-    void release(bool sendCallback, bool pushBlankBuffer);
+    void release(bool sendCallback);
 
     /**
      * Creates an input surface for the current device configuration compatible with CCodec.

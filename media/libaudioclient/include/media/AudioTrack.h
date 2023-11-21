@@ -1176,9 +1176,6 @@ public:
 
             bool isPlaying() {
                 AutoMutex lock(mLock);
-                return isPlaying_l();
-            }
-            bool isPlaying_l() {
                 return mState == STATE_ACTIVE || mState == STATE_STOPPING;
             }
 

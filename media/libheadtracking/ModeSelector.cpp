@@ -117,12 +117,10 @@ HeadTrackingMode ModeSelector::getActualMode() const {
 std::string ModeSelector::toString(unsigned level) const {
     std::string prefixSpace(level, ' ');
     std::string ss(prefixSpace);
-    ss.append("ModeSelector: ScreenToStage ")
-        .append(mScreenToStage.toString())
-        .append("\n")
-        .append(prefixSpace)
-        .append("Mode change history:\n")
-        .append(mLocalLog.dumpToString((prefixSpace + " ").c_str(), sMaxLocalLogLine));
+    StringAppendF(&ss, "ModeSelector: ScreenToStage %s\n",
+                    mScreenToStage.toString().c_str());
+    ss.append(prefixSpace + "Mode downgrade history:\n");
+    ss += mLocalLog.dumpToString((prefixSpace + " ").c_str(), sMaxLocalLogLine);
     return ss;
 }
 

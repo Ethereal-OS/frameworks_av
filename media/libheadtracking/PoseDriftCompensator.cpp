@@ -18,7 +18,7 @@
 
 #include <cmath>
 
-#include "media/QuaternionUtil.h"
+#include "QuaternionUtil.h"
 
 namespace android {
 namespace media {

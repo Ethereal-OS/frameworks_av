@@ -1843,6 +1843,7 @@ MediaPlayerService::AudioOutput::AudioOutput(audio_session_t sessionId,
     } else {
         mAttributes = NULL;
     }
+
     setMinBufferCount();
 }
 
@@ -2689,7 +2690,7 @@ size_t MediaPlayerService::AudioOutput::CallbackData::onMoreData(const AudioTrac
     // This is a benign busy-wait, with the next data request generated 10 ms or more later;
     // nevertheless for power reasons, we don't want to see too many of these.
 
-    ALOGV_IF(actualSize == 0 && buffer.size() > 0, "callbackwrapper: empty buffer returned");
+    ALOGV_IF(actualSize == 0 && buffer->size > 0, "callbackwrapper: empty buffer returned");
     unlock();
     return actualSize;
 }

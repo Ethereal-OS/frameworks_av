@@ -638,12 +638,12 @@ status_t NuMediaExtractor::appendVorbisNumPageSamples(
             kKeyValidSamples, &numPageSamples)) {
         numPageSamples = -1;
     }
-
+    
     // insert, including accounting for the space used.
     memcpy((uint8_t *)buffer->data() + mbuf->range_length(),
            &numPageSamples,
            sizeof(numPageSamples));
-    buffer->setRange(buffer->offset(), buffer->size() + sizeof(numPageSamples));
+    buffer->setRange(buffer->offset(), buffer->size() + sizeof(numPageSamples));           
 
     uint32_t type;
     const void *data;
@@ -713,7 +713,7 @@ status_t NuMediaExtractor::readSampleData(const sp<ABuffer> &buffer) {
     if (buffer->capacity() < sampleSize) {
         return -ENOMEM;
     }
-
+    
     const size_t srclen = it->mBuffer->range_length();
     const uint8_t *src =
         (const uint8_t *)it->mBuffer->data()

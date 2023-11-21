@@ -17,8 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "PoseBias.h"
-
-#include "media/QuaternionUtil.h"
+#include "QuaternionUtil.h"
 #include "TestUtil.h"
 
 namespace android {

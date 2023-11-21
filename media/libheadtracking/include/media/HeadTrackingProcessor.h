@@ -19,7 +19,6 @@
 
 #include "HeadTrackingMode.h"
 #include "Pose.h"
-#include "PosePredictorType.h"
 #include "Twist.h"
 
 namespace android {
@@ -96,13 +95,7 @@ class HeadTrackingProcessor {
     /**
      * This causes the current poses for both the head and/or screen to be considered "center".
      */
-    virtual void recenter(
-            bool recenterHead = true, bool recenterScreen = true, std::string source = "") = 0;
-
-    /**
-     * Set the predictor type.
-     */
-    virtual void setPosePredictorType(PosePredictorType type) = 0;
+    virtual void recenter(bool recenterHead = true, bool recenterScreen = true) = 0;
 
     /**
      * Dump HeadTrackingProcessor parameters under caller lock.

@@ -39,7 +39,7 @@ public:
     VolumeCurves *getVolumeCurves() { return &mGroupVolumeCurves; }
 
     void addSupportedAttributes(const audio_attributes_t &attr);
-    AttributesVector getSupportedAttributes() const;
+    AttributesVector getSupportedAttributes() const { return mGroupVolumeCurves.getAttributes(); }
 
     void addSupportedStream(audio_stream_type_t stream);
     StreamTypeVector getStreamTypes() const { return mGroupVolumeCurves.getStreamTypes(); }
