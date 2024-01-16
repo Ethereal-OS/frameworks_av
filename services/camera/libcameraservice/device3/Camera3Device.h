@@ -82,7 +82,8 @@ class Camera3Device :
   friend class AidlCamera3Device;
   public:
 
-    explicit Camera3Device(const String8& id, bool overrideForPerfClass, bool legacyClient = false);
+    explicit Camera3Device(const String8& id, bool overrideForPerfClass, bool overrideToPortrait,
+            bool legacyClient = false);
 
     virtual ~Camera3Device();
     // Delete and optionally close native handles and clear the input vector afterward
@@ -633,6 +634,15 @@ class Camera3Device :
     status_t initializeCommonLocked();
 
     /**
+     * Update capture request list so that each batch size honors the batch_size_max report from
+     * the HAL.
+     *
+     * Must be called with mLock held.
+     */
+    size_t applyMaxBatchSizeLocked(RequestList* requestList,
+                                   sp<camera3::Camera3OutputStreamInterface> stream);
+
+    /**
      * Get the last request submitted to the hal by the request thread.
      *
      * Must be called with mLock held.
@@ -803,7 +813,8 @@ class Camera3Device :
                 sp<HalInterface> interface,
                 const Vector<int32_t>& sessionParamKeys,
                 bool useHalBufManager,
-                bool supportCameraMute);
+                bool supportCameraMute,
+                bool overrideToPortrait);
         ~RequestThread();
 
         void     setNotificationListener(wp<NotificationListener> listener);
@@ -1083,6 +1094,7 @@ class Camera3Device :
 
         const bool         mUseHalBufManager;
         const bool         mSupportCameraMute;
+        const bool         mOverrideToPortrait;
     };
 
     virtual sp<RequestThread> createNewRequestThread(wp<Camera3Device> /*parent*/,
@@ -1090,7 +1102,8 @@ class Camera3Device :
                 sp<HalInterface> /*interface*/,
                 const Vector<int32_t>& /*sessionParamKeys*/,
                 bool /*useHalBufManager*/,
-                bool /*supportCameraMute*/) = 0;
+                bool /*supportCameraMute*/,
+                bool /*overrideToPortrait*/) = 0;
 
     sp<RequestThread> mRequestThread;
 

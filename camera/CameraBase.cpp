@@ -23,6 +23,7 @@
 #include <cutils/properties.h>
 
 #include <android/hardware/ICameraService.h>
+#include <com/android/internal/compat/IPlatformCompatNative.h>
 
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
@@ -277,10 +278,11 @@ int CameraBase<TCam, TCamTraits>::getNumberOfCameras() {
 // this can be in BaseCamera but it should be an instance method
 template <typename TCam, typename TCamTraits>
 status_t CameraBase<TCam, TCamTraits>::getCameraInfo(int cameraId,
+        bool overrideToPortrait,
         struct hardware::CameraInfo* cameraInfo) {
     const sp<::android::hardware::ICameraService> cs = getCameraService();
     if (cs == 0) return UNKNOWN_ERROR;
-    binder::Status res = cs->getCameraInfo(cameraId, cameraInfo);
+    binder::Status res = cs->getCameraInfo(cameraId, overrideToPortrait, cameraInfo);
     return res.isOk() ? OK : res.serviceSpecificErrorCode();
 }
 

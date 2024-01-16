@@ -78,10 +78,6 @@
 #include "utils/CameraThreadState.h"
 #include "utils/CameraServiceProxyWrapper.h"
 
-#ifdef CAMERA_NEEDS_CLIENT_INFO_LIB
-#include <vendor/oplus/hardware/cameraMDM/2.0/IOPlusCameraMDM.h>
-#endif
-
 namespace {
     const char* kPermissionServiceName = "permission";
 }; // namespace anonymous
@@ -99,9 +95,6 @@ using hardware::camera2::ICameraInjectionCallback;
 using hardware::camera2::ICameraInjectionSession;
 using hardware::camera2::utils::CameraIdAndSessionConfiguration;
 using hardware::camera2::utils::ConcurrentCameraIdCombination;
-#ifdef CAMERA_NEEDS_CLIENT_INFO_LIB
-using ::vendor::oplus::hardware::cameraMDM::V2_0::IOPlusCameraMDM;
-#endif
 
 // ----------------------------------------------------------------------------
 // Logging support -- this is for debugging only
@@ -139,9 +132,6 @@ static const String16 sCameraOpenCloseListenerPermission(
 static const String16
         sCameraInjectExternalCameraPermission("android.permission.CAMERA_INJECT_EXTERNAL_CAMERA");
 const char *sFileName = "lastOpenSessionDumpFile";
-#ifdef CAMERA_NEEDS_CLIENT_INFO_LIB
-static const sp<IOPlusCameraMDM> gVendorCameraProviderService = IOPlusCameraMDM::getService();
-#endif
 static constexpr int32_t kSystemNativeClientScore = resource_policy::PERCEPTIBLE_APP_ADJ;
 static constexpr int32_t kSystemNativeClientState =
         ActivityManager::PROCESS_STATE_PERSISTENT_UI;
@@ -151,9 +141,6 @@ const String16 CameraService::kWatchAllClientsFlag("all");
 
 // Set to keep track of logged service error events.
 static std::set<String8> sServiceErrorEventSet;
-
-// Current camera package name
-static std::string sCurrPackageName;
 
 CameraService::CameraService() :
         mEventLog(DEFAULT_EVENT_LOG_LENGTH),
@@ -355,7 +342,9 @@ void CameraService::filterSPerfClassCharacteristicsLocked() {
         int facing = -1;
         int orientation = 0;
         String8 cameraId8(cameraId.c_str());
-        getDeviceVersion(cameraId8, /*out*/&facing, /*out*/&orientation);
+        int portraitRotation;
+        getDeviceVersion(cameraId8, /*overrideToPortrait*/false, /*out*/&portraitRotation,
+                /*out*/&facing, /*out*/&orientation);
         if (facing == -1) {
             ALOGE("%s: Unable to get camera device \"%s\" facing", __FUNCTION__, cameraId.c_str());
             return;
@@ -660,8 +649,9 @@ void CameraService::onTorchStatusChangedLocked(const String8& cameraId,
 
 static bool hasPermissionsForSystemCamera(int callingPid, int callingUid,
         bool logPermissionFailure = false) {
-    return checkPermission(sCameraPermission, callingPid, callingUid,
-            logPermissionFailure);
+    return checkPermission(sSystemCameraPermission, callingPid, callingUid,
+            logPermissionFailure) &&
+            checkPermission(sCameraPermission, callingPid, callingUid);
 }
 
 Status CameraService::getNumberOfCameras(int32_t type, int32_t* numCameras) {
@@ -694,7 +684,7 @@ Status CameraService::getNumberOfCameras(int32_t type, int32_t* numCameras) {
     return Status::ok();
 }
 
-Status CameraService::getCameraInfo(int cameraId,
+Status CameraService::getCameraInfo(int cameraId, bool overrideToPortrait,
         CameraInfo* cameraInfo) {
     ATRACE_CALL();
     Mutex::Autolock l(mServiceLock);
@@ -722,8 +712,9 @@ Status CameraService::getCameraInfo(int cameraId,
     }
 
     Status ret = Status::ok();
+    int portraitRotation;
     status_t err = mCameraProviderManager->getCameraInfo(
-            cameraIdStr.c_str(), cameraInfo);
+            cameraIdStr.c_str(), overrideToPortrait, &portraitRotation, cameraInfo);
     if (err != OK) {
         ret = STATUS_ERROR_FMT(ERROR_INVALID_OPERATION,
                 "Error retrieving camera info from device %d: %s (%d)", cameraId,
@@ -758,7 +749,7 @@ String8 CameraService::cameraIdIntToStr(int cameraIdInt) {
 }
 
 Status CameraService::getCameraCharacteristics(const String16& cameraId,
-        int targetSdkVersion, CameraMetadata* cameraInfo) {
+        int targetSdkVersion, bool overrideToPortrait, CameraMetadata* cameraInfo) {
     ATRACE_CALL();
     if (!cameraInfo) {
         ALOGE("%s: cameraInfo is NULL", __FUNCTION__);
@@ -785,7 +776,7 @@ Status CameraService::getCameraCharacteristics(const String16& cameraId,
             SessionConfigurationUtils::targetPerfClassPrimaryCamera(mPerfClassPrimaryCameraIds,
                     cameraIdStr, targetSdkVersion);
     status_t res = mCameraProviderManager->getCameraCharacteristics(
-            cameraIdStr, overrideForPerfClass, cameraInfo);
+            cameraIdStr, overrideForPerfClass, cameraInfo, overrideToPortrait);
     if (res != OK) {
         if (res == NAME_NOT_FOUND) {
             return STATUS_ERROR_FMT(ERROR_ILLEGAL_ARGUMENT, "Unable to retrieve camera "
@@ -906,8 +897,8 @@ void CameraService::clearCachedVariables() {
     BasicClient::BasicClient::sCameraService = nullptr;
 }
 
-std::pair<int, IPCTransport> CameraService::getDeviceVersion(const String8& cameraId, int* facing,
-        int* orientation) {
+std::pair<int, IPCTransport> CameraService::getDeviceVersion(const String8& cameraId,
+        bool overrideToPortrait, int* portraitRotation, int* facing, int* orientation) {
     ATRACE_CALL();
 
     int deviceVersion = 0;
@@ -926,7 +917,8 @@ std::pair<int, IPCTransport> CameraService::getDeviceVersion(const String8& came
 
     hardware::CameraInfo info;
     if (facing) {
-        res = mCameraProviderManager->getCameraInfo(cameraId.string(), &info);
+        res = mCameraProviderManager->getCameraInfo(cameraId.string(), overrideToPortrait,
+                portraitRotation, &info);
         if (res != OK) {
             return std::make_pair(-1, IPCTransport::INVALID);
         }
@@ -954,10 +946,6 @@ Status CameraService::filterGetInfoErrorCode(status_t err) {
                     "Camera HAL encountered error %d: %s",
                     err, strerror(-err));
     }
-}
-
-std::string CameraService::getCurrPackageName() {
-    return sCurrPackageName;
 }
 
 Status CameraService::makeClient(const sp<CameraService>& cameraService,
@@ -1007,7 +995,8 @@ Status CameraService::makeClient(const sp<CameraService>& cameraService,
                 static_cast<hardware::camera2::ICameraDeviceCallbacks*>(cameraCb.get());
         *client = new CameraDeviceClient(cameraService, tmp, packageName,
                 systemNativeClient, featureId, cameraId, facing, sensorOrientation,
-                clientPid, clientUid, servicePid, overrideForPerfClass);
+                clientPid, clientUid, servicePid, overrideForPerfClass, overrideToPortrait);
+        ALOGI("%s: Camera2 API, override to portrait %d", __FUNCTION__, overrideToPortrait);
     }
     return Status::ok();
 }
@@ -1378,10 +1367,6 @@ void CameraService::finishConnectLocked(const sp<BasicClient>& client,
                     oomScoreOffset, systemNativeClient);
     auto evicted = mActiveClientManager.addAndEvict(clientDescriptor);
 
-    if (strcmp(String8(client->getPackageName()).string(), "com.android.camera") == 0) {
-        evicted.clear();
-    }
-
     logConnected(desc->getKey(), static_cast<int>(desc->getOwnerId()),
             String8(client->getPackageName()));
 
@@ -1491,9 +1476,6 @@ status_t CameraService::handleEvictionsLocked(const String8& cameraId, int clien
         // Find clients that would be evicted
         auto evicted = mActiveClientManager.wouldEvict(clientDescriptor);
 
-        if (strcmp(String8(packageName).string(), "com.android.camera") == 0) {
-            evicted.clear();
-        }
         // If the incoming client was 'evicted,' higher priority clients have the camera in the
         // background, so we cannot do evictions
         if (std::find(evicted.begin(), evicted.end(), clientDescriptor) != evicted.end()) {
@@ -1709,6 +1691,7 @@ Status CameraService::connectDevice(
         const String16& clientPackageName,
         const std::optional<String16>& clientFeatureId,
         int clientUid, int oomScoreOffset, int targetSdkVersion,
+        bool overrideToPortrait,
         /*out*/
         sp<hardware::camera2::ICameraDeviceUser>* device) {
 
@@ -1855,8 +1838,6 @@ Status CameraService::connectHelper(const sp<CALLBACK>& cameraCb, const String8&
             "Camera API version %d", packagePid, clientName8.string(), cameraId.string(),
             static_cast<int>(effectiveApiLevel));
 
-    sCurrPackageName = clientName8.string();
-
     nsecs_t openTimeNs = systemTime();
 
     sp<CLIENT> client = nullptr;
@@ -1927,8 +1908,10 @@ Status CameraService::connectHelper(const sp<CALLBACK>& cameraCb, const String8&
         // give flashlight a chance to close devices if necessary.
         mFlashlight->prepareDeviceOpen(cameraId);
 
+        int portraitRotation;
         auto deviceVersionAndTransport =
-                getDeviceVersion(cameraId, /*out*/&facing, /*out*/&orientation);
+                getDeviceVersion(cameraId, overrideToPortrait, /*out*/&portraitRotation,
+                        /*out*/&facing, /*out*/&orientation);
         if (facing == -1) {
             ALOGE("%s: Unable to get camera device \"%s\"  facing", __FUNCTION__, cameraId.string());
             return STATUS_ERROR_FMT(ERROR_INVALID_OPERATION,
@@ -2003,8 +1986,25 @@ Status CameraService::connectHelper(const sp<CALLBACK>& cameraCb, const String8&
         // Set rotate-and-crop override behavior
         if (mOverrideRotateAndCropMode != ANDROID_SCALER_ROTATE_AND_CROP_AUTO) {
             client->setRotateAndCropOverride(mOverrideRotateAndCropMode);
+        } else if (overrideToPortrait && portraitRotation != 0) {
+            uint8_t rotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_AUTO;
+            switch (portraitRotation) {
+                case 90:
+                    rotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_90;
+                    break;
+                case 180:
+                    rotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_180;
+                    break;
+                case 270:
+                    rotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_270;
+                    break;
+                default:
+                    ALOGE("Unexpected portrait rotation: %d", portraitRotation);
+                    break;
+            }
+            client->setRotateAndCropOverride(rotateAndCropMode);
         } else {
-          client->setRotateAndCropOverride(
+            client->setRotateAndCropOverride(
               CameraServiceProxyWrapper::getRotateAndCropOverride(
                   clientPackageName, facing, multiuser_get_user_id(clientUid)));
         }
@@ -2509,6 +2509,11 @@ Status CameraService::notifyDeviceStateChange(int64_t newState) {
 
     ATRACE_CALL();
 
+    {
+        Mutex::Autolock lock(mServiceLock);
+        mDeviceState = newState;
+    }
+
     mCameraProviderManager->notifyDeviceStateChange(newState);
 
     return Status::ok();
@@ -2542,12 +2547,12 @@ Status CameraService::notifyDisplayConfigurationChange() {
     for (auto& current : clients) {
         if (current != nullptr) {
             const auto basicClient = current->getValue();
-            if (basicClient.get() != nullptr) {
-              basicClient->setRotateAndCropOverride(
-                  CameraServiceProxyWrapper::getRotateAndCropOverride(
-                      basicClient->getPackageName(),
-                      basicClient->getCameraFacing(),
-                      multiuser_get_user_id(basicClient->getClientUid())));
+            if (basicClient.get() != nullptr && !basicClient->getOverrideToPortrait()) {
+                basicClient->setRotateAndCropOverride(
+                        CameraServiceProxyWrapper::getRotateAndCropOverride(
+                                basicClient->getPackageName(),
+                                basicClient->getCameraFacing(),
+                                multiuser_get_user_id(basicClient->getClientUid())));
             }
         }
     }
@@ -2819,7 +2824,8 @@ Status CameraService::supportsCameraApi(const String16& cameraId, int apiVersion
             return STATUS_ERROR(ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
 
-    auto deviceVersionAndTransport = getDeviceVersion(id);
+    int portraitRotation;
+    auto deviceVersionAndTransport = getDeviceVersion(id, false, &portraitRotation);
     if (deviceVersionAndTransport.first == -1) {
         String8 msg = String8::format("Unknown camera ID %s", id.string());
         ALOGE("%s: %s", __FUNCTION__, msg.string());
@@ -3305,13 +3311,13 @@ CameraService::Client::Client(const sp<CameraService>& cameraService,
         const String8& cameraIdStr,
         int api1CameraId, int cameraFacing, int sensorOrientation,
         int clientPid, uid_t clientUid,
-        int servicePid) :
+        int servicePid, bool overrideToPortrait) :
         CameraService::BasicClient(cameraService,
                 IInterface::asBinder(cameraClient),
                 clientPackageName, systemNativeClient, clientFeatureId,
                 cameraIdStr, cameraFacing, sensorOrientation,
                 clientPid, clientUid,
-                servicePid),
+                servicePid, overrideToPortrait),
         mCameraId(api1CameraId)
 {
     int callingPid = CameraThreadState::getCallingPid();
@@ -3341,7 +3347,7 @@ CameraService::BasicClient::BasicClient(const sp<CameraService>& cameraService,
         const String16& clientPackageName, bool nativeClient,
         const std::optional<String16>& clientFeatureId, const String8& cameraIdStr,
         int cameraFacing, int sensorOrientation, int clientPid, uid_t clientUid,
-        int servicePid):
+        int servicePid, bool overrideToPortrait):
         mDestructionStarted(false),
         mCameraIdStr(cameraIdStr), mCameraFacing(cameraFacing), mOrientation(sensorOrientation),
         mClientPackageName(clientPackageName), mSystemNativeClient(nativeClient),
@@ -3349,6 +3355,7 @@ CameraService::BasicClient::BasicClient(const sp<CameraService>& cameraService,
         mClientPid(clientPid), mClientUid(clientUid),
         mServicePid(servicePid),
         mDisconnected(false), mUidIsTrusted(false),
+        mOverrideToPortrait(overrideToPortrait),
         mAudioRestriction(hardware::camera2::ICameraDeviceUser::AUDIO_RESTRICTION_NONE),
         mRemoteBinder(remoteCallback),
         mOpsActive(false),
@@ -3541,9 +3548,7 @@ status_t CameraService::BasicClient::startCameraOps() {
 
     // Notify listeners of camera open/close status
     sCameraService->updateOpenCloseStatus(mCameraIdStr, true/*open*/, mClientPackageName);
-#ifdef CAMERA_NEEDS_CLIENT_INFO_LIB
-    gVendorCameraProviderService->setPackageName(String8(mClientPackageName).string());
-#endif
+
     return OK;
 }
 
@@ -3716,8 +3721,7 @@ void CameraService::BasicClient::block() {
 // ----------------------------------------------------------------------------
 
 void CameraService::Client::notifyError(int32_t errorCode,
-        const CaptureResultExtras& resultExtras) {
-    (void) resultExtras;
+        [[maybe_unused]] const CaptureResultExtras& resultExtras) {
     if (mRemoteCallback != NULL) {
         int32_t api1ErrorCode = CAMERA_ERROR_RELEASED;
         if (errorCode == hardware::camera2::ICameraDeviceCallbacks::ERROR_CAMERA_DISABLED) {

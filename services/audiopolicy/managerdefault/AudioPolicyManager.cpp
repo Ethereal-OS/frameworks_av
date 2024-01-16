@@ -1084,7 +1084,12 @@ audio_io_handle_t AudioPolicyManager::getOutput(audio_stream_type_t stream)
     // and AudioSystem::getOutputSamplingRate().
 
     SortedVector<audio_io_handle_t> outputs = getOutputsForDevices(devices, mOutputs);
-    const audio_io_handle_t output = selectOutput(outputs);
+    audio_output_flags_t flags = AUDIO_OUTPUT_FLAG_NONE;
+    if (stream == AUDIO_STREAM_MUSIC &&
+        property_get_bool("audio.deep_buffer.media", false /* default_value */)) {
+        flags = AUDIO_OUTPUT_FLAG_DEEP_BUFFER;
+    }
+    const audio_io_handle_t output = selectOutput(outputs, flags);
 
     ALOGV("getOutput() stream %d selected devices %s, output %d", stream,
           devices.toString().c_str(), output);
@@ -3168,7 +3173,7 @@ status_t AudioPolicyManager::getVolumeIndexForAttributes(const audio_attributes_
     // stream by the engine.
     DeviceTypeSet deviceTypes = {device};
     if (device == AUDIO_DEVICE_OUT_DEFAULT_FOR_VOLUME) {
-        DeviceTypeSet deviceTypes = mEngine->getOutputDevicesForAttributes(
+        deviceTypes = mEngine->getOutputDevicesForAttributes(
                 attr, nullptr, true /*fromCache*/).types();
     }
     return getVolumeIndex(getVolumeCurves(attr), index, deviceTypes);
@@ -3178,7 +3183,7 @@ status_t AudioPolicyManager::getVolumeIndex(const IVolumeCurves &curves,
                                             int &index,
                                             const DeviceTypeSet& deviceTypes) const
 {
-    if (isSingleDeviceType(deviceTypes, audio_is_output_device)) {
+    if (!isSingleDeviceType(deviceTypes, audio_is_output_device)) {
         return BAD_VALUE;
     }
     index = curves.getVolumeIndex(deviceTypes);
@@ -5628,7 +5633,20 @@ status_t AudioPolicyManager::initialize() {
         return status;
     }
 
-    mEngine->updateDeviceSelectionCache();
+    // If microphones address is empty, set it according to device type
+    for (size_t i = 0; i < mInputDevicesAll.size(); i++) {
+        if (mInputDevicesAll[i]->address().empty()) {
+            if (mInputDevicesAll[i]->type() == AUDIO_DEVICE_IN_BUILTIN_MIC) {
+                mInputDevicesAll[i]->setAddress(AUDIO_BOTTOM_MICROPHONE_ADDRESS);
+            } else if (mInputDevicesAll[i]->type() == AUDIO_DEVICE_IN_BACK_MIC) {
+                mInputDevicesAll[i]->setAddress(AUDIO_BACK_MICROPHONE_ADDRESS);
+            }
+        }
+    }
+
+    // The actual device selection cache will be updated when calling `updateDevicesAndOutputs`
+    // at the end of this function.
+    mEngine->initializeDeviceSelectionCache();
     mCommunnicationStrategy = mEngine->getProductStrategyForAttributes(
         mEngine->getAttributesForStreamType(AUDIO_STREAM_VOICE_CALL));
 
@@ -5642,17 +5660,6 @@ status_t AudioPolicyManager::initialize() {
                  mDefaultOutputDevice->toString().c_str());
         status = NO_INIT;
     }
-    // If microphones address is empty, set it according to device type
-    for (size_t i = 0; i < mAvailableInputDevices.size(); i++) {
-        if (mAvailableInputDevices[i]->address().empty()) {
-            if (mAvailableInputDevices[i]->type() == AUDIO_DEVICE_IN_BUILTIN_MIC) {
-                mAvailableInputDevices[i]->setAddress(AUDIO_BOTTOM_MICROPHONE_ADDRESS);
-            } else if (mAvailableInputDevices[i]->type() == AUDIO_DEVICE_IN_BACK_MIC) {
-                mAvailableInputDevices[i]->setAddress(AUDIO_BACK_MICROPHONE_ADDRESS);
-            }
-        }
-    }
-
     ALOGW_IF(mPrimaryOutput == nullptr, "The policy configuration does not declare a primary output");
 
     // Silence ALOGV statements
@@ -7345,7 +7352,8 @@ status_t AudioPolicyManager::checkAndSetVolume(IVolumeCurves &curves,
     // if sco and call follow same curves, bypass forceUseForComm
     if ((callVolSrc != btScoVolSrc) &&
             ((isVoiceVolSrc && isScoRequested) ||
-             (isBtScoVolSrc && !(isScoRequested || isHAUsed)))) {
+             (isBtScoVolSrc && !(isScoRequested || isHAUsed))) &&
+            !isSingleDeviceType(deviceTypes, AUDIO_DEVICE_OUT_TELEPHONY_TX)) {
         ALOGV("%s cannot set volume group %d volume when is%srequested for comm", __func__,
              volumeSource, isScoRequested ? " " : " not ");
         // Do not return an error here as AudioService will always set both voice call

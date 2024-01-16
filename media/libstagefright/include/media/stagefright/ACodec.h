@@ -18,6 +18,8 @@
 #define A_CODEC_H_
 
 #include <stdint.h>
+#include <list>
+#include <vector>
 #include <android/native_window.h>
 #include <media/hardware/MetadataBufferType.h>
 #include <media/MediaCodecInfo.h>
@@ -265,11 +267,11 @@ private:
     sp<AMessage> mBaseOutputFormat;
 
     FrameRenderTracker mRenderTracker; // render information for buffers rendered by ACodec
-    Vector<BufferInfo> mBuffers[2];
+    std::vector<BufferInfo> mBuffers[2];
     bool mPortEOS[2];
     status_t mInputEOSResult;
 
-    List<sp<AMessage> > mDeferredQueue;
+    std::list<sp<AMessage>> mDeferredQueue;
 
     sp<AMessage> mLastOutputFormat;
     bool mIsVideo;
@@ -599,6 +601,7 @@ private:
             status_t internalError = UNKNOWN_ERROR);
 
     status_t requestIDRFrame();
+    status_t setSurfaceParameters(const sp<AMessage> &params);
     status_t setParameters(const sp<AMessage> &params);
 
     // set vendor extension parameters specified in params that are supported by the codec

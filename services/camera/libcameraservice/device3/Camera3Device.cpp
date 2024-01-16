@@ -14,40 +14,6 @@
  * limitations under the License.
  */
 
-/* Changes from Qualcomm Innovation Center are provided under the following license:
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted (subject to the limitations in the
- * disclaimer below) provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *
- *   * Redistributions in binary form must reproduce the above
- *     copyright notice, this list of conditions and the following
- *     disclaimer in the documentation and/or other materials provided
- *     with the distribution.
- *
- *   * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
- * GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
- * HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- * GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
- * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #define LOG_TAG "Camera3-Device"
 #define ATRACE_TAG ATRACE_TAG_CAMERA
 //#define LOG_NDEBUG 0
@@ -57,16 +23,6 @@
 #define ALOGVV(...) ALOGV(__VA_ARGS__)
 #else
 #define ALOGVV(...) ((void)0)
-#endif
-
-#ifdef NEEDS_OPLUS_VENDOR_TAG
-#define TAG_NAME "com.oplus.packageName"
-#endif
-#ifdef USES_OPLUS_CAMERA
-#define TAG_NAME "com.oplus.packageName"
-#endif
-#ifdef USES_NOTHING_CAMERA
-#define TAG_NAME "com.nothing.device.package_name"
 #endif
 
 // Convenience macro for transient errors
@@ -117,7 +73,8 @@ using namespace android::hardware::camera;
 
 namespace android {
 
-Camera3Device::Camera3Device(const String8 &id, bool overrideForPerfClass, bool legacyClient):
+Camera3Device::Camera3Device(const String8 &id, bool overrideForPerfClass, bool overrideToPortrait,
+        bool legacyClient):
         mId(id),
         mLegacyClient(legacyClient),
         mOperatingMode(NO_MODE),
@@ -214,7 +171,7 @@ status_t Camera3Device::initializeCommonLocked() {
     /** Start up request queue thread */
     mRequestThread = createNewRequestThread(
             this, mStatusTracker, mInterface, sessionParamKeys,
-            mUseHalBufManager, mSupportCameraMute);
+            mUseHalBufManager, mSupportCameraMute, mOverrideToPortrait);
     res = mRequestThread->run(String8::format("C3Dev-%s-ReqQueue", mId.string()).string());
     if (res != OK) {
         SET_ERR_L("Unable to start request queue thread: %s (%d)",
@@ -241,11 +198,6 @@ status_t Camera3Device::initializeCommonLocked() {
             ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) {
         mDeviceTimeBaseIsRealtime = true;
     }
-
-#ifdef TARGET_CAMERA_BOOTTIME_TIMESTAMP
-    // Always calculate the offset if requested
-    mTimestampOffset = getMonoToBoottimeOffset();
-#endif
 
     // Will the HAL be sending in early partial result metadata?
     camera_metadata_entry partialResultsCount =
@@ -483,29 +435,6 @@ ssize_t Camera3Device::getJpegBufferSize(const CameraMetadata &info, uint32_t wi
     }
     maxJpegBufferSize = jpegBufMaxSize.data.i32[0];
 
-    uint32_t tag = 0;
-    ssize_t jpegDebugSize = 0;
-    sp<VendorTagDescriptor> vTags;
-    sp<VendorTagDescriptorCache> cache = VendorTagDescriptorCache::getGlobalVendorTagCache();
-    if (NULL != cache.get()) {
-        metadata_vendor_id_t vendorId;
-        status_t res = info.getVendorId(&vendorId);
-        if (res == OK) {
-            cache->getVendorTagDescriptor(vendorId, &vTags);
-        }
-    }
-
-    if (NULL != vTags.get()) {
-        status_t res = CameraMetadata::getTagFromName("org.quic.camera.jpegdebugdata.size", vTags.get(), &tag);
-
-        if (res == OK) {
-            camera_metadata_ro_entry jpegdebugdatasize = info.find(tag);
-            if (jpegdebugdatasize.count != 0) {
-                jpegDebugSize = jpegdebugdatasize.data.i32[0];
-                ALOGE("%s: Camera %s: Jpeg debug data size %zd", __FUNCTION__, mId.string(), jpegDebugSize);
-            }
-        }
-    }
     camera3::Size chosenMaxJpegResolution = maxDefaultJpegResolution;
     if (useMaxSensorPixelModeThreshold) {
         maxJpegBufferSize =
@@ -515,12 +444,11 @@ ssize_t Camera3Device::getJpegBufferSize(const CameraMetadata &info, uint32_t wi
     }
     assert(kMinJpegBufferSize < maxJpegBufferSize);
 
-    ssize_t minJpegBufferSize = kMinJpegBufferSize + jpegDebugSize;
     // Calculate final jpeg buffer size for the given resolution.
     float scaleFactor = ((float) (width * height)) /
             (chosenMaxJpegResolution.width * chosenMaxJpegResolution.height);
-    ssize_t jpegBufferSize = scaleFactor * (maxJpegBufferSize - minJpegBufferSize) +
-            minJpegBufferSize;
+    ssize_t jpegBufferSize = scaleFactor * (maxJpegBufferSize - kMinJpegBufferSize) +
+            kMinJpegBufferSize;
     return jpegBufferSize;
 }
 
@@ -567,9 +495,8 @@ ssize_t Camera3Device::getRawOpaqueBufferSize(const CameraMetadata &info, int32_
     return BAD_VALUE;
 }
 
-status_t Camera3Device::dump(int fd, const Vector<String16> &args) {
+status_t Camera3Device::dump(int fd, [[maybe_unused]] const Vector<String16> &args) {
     ATRACE_CALL();
-    (void)args;
 
     // Try to lock, but continue in case of failure (to avoid blocking in
     // deadlocks)
@@ -824,8 +751,7 @@ status_t Camera3Device::convertMetadataListToRequestListLocked(
         auto firstRequest = requestList->begin();
         for (auto& outputStream : (*firstRequest)->mOutputStreams) {
             if (outputStream->isVideoStream()) {
-                (*firstRequest)->mBatchSize = requestList->size();
-                outputStream->setBatchSize(requestList->size());
+                outputStream->setBatchSize(applyMaxBatchSizeLocked(requestList, outputStream));
                 break;
             }
         }
@@ -2389,63 +2315,6 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
         return BAD_VALUE;
     }
 
-#ifdef TAG_NAME
-    sp<VendorTagDescriptor> vTags;
-    sp<VendorTagDescriptorCache> vCache = VendorTagDescriptorCache::getGlobalVendorTagCache();
-    if (vCache.get()) {
-        const camera_metadata_t *metaBuffer = sessionParams.getAndLock();
-        metadata_vendor_id_t vendorId = get_camera_metadata_vendor_id(metaBuffer);
-        sessionParams.unlock(metaBuffer);
-        vCache->getVendorTagDescriptor(vendorId, &vTags);
-        uint32_t tag;
-        if (CameraMetadata::getTagFromName(TAG_NAME, vTags.get(), &tag)) {
-            ALOGE("%s: Unable to get %s tag", __FUNCTION__, TAG_NAME);
-        } else {
-            std::string pkgName = CameraService::getCurrPackageName();
-            status_t res = const_cast<CameraMetadata&>(sessionParams).update(tag, String8(pkgName.c_str()));
-            if (res) {
-                ALOGE("%s: metadata update failed, res = %d", __FUNCTION__, res);
-            }
-        }
-    }
-#endif
-
-#ifdef INCLUDES_MIUI_CAMERA
-    {
-        sp<VendorTagDescriptor> vTags =
-            VendorTagDescriptor::getGlobalVendorTagDescriptor();
-        if ((nullptr == vTags.get() || 0 >= vTags->getTagCount())) {
-            sp<VendorTagDescriptorCache> cache =
-            VendorTagDescriptorCache::getGlobalVendorTagCache();
-            if (cache.get()) {
-                const camera_metadata_t *metaBuffer = mSessionParams.getAndLock();
-                metadata_vendor_id_t vendorId = get_camera_metadata_vendor_id(metaBuffer);
-                mSessionParams.unlock(metaBuffer);
-                cache->getVendorTagDescriptor(vendorId, &vTags);
-            }
-        }
-
-        char tagName[] = "com.xiaomi.sessionparams.clientName";
-        char miAppName[] = "com.android.camera";
-        uint32_t tag = 0;
-        status_t result = mSessionParams.getTagFromName(tagName, vTags.get(), &tag);
-        camera_metadata_entry_t e;
-        bool isValidTag = false;
-        if (result == OK) {
-            e = mSessionParams.find(tag);
-            if(e.count) {
-                isValidTag = true;
-                ALOGV("%s %d [DEBUG] clientname %s", __FUNCTION__, __LINE__, e.data.u8);
-            }
-        }
-        if (isValidTag && !strcmp(miAppName, (const char *)e.data.u8)) {
-            ALOGV("%s %d Mi app not set fold", __FUNCTION__, __LINE__);
-        } else {
-            ALOGV("%s %d Not Mi app set fold", __FUNCTION__, __LINE__);
-        }
-    }
-#endif
-
     bool isConstrainedHighSpeed =
             CAMERA_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE == operatingMode;
 
@@ -2927,6 +2796,59 @@ void Camera3Device::flushInflightRequests() {
     camera3::flushInflightRequests(states);
 }
 
+size_t Camera3Device::applyMaxBatchSizeLocked(RequestList* requestList,
+                                              sp<camera3::Camera3OutputStreamInterface> stream) {
+    int batchSize = requestList->size();
+    const auto& metadata = (*requestList->begin())->mSettingsList.begin()->metadata;
+
+    uint32_t tag = ANDROID_CONTROL_AVAILABLE_HIGH_SPEED_VIDEO_CONFIGURATIONS;
+    auto sensorPixelModeEntry = metadata.find(ANDROID_SENSOR_PIXEL_MODE);
+    if (sensorPixelModeEntry.count != 0) {
+        if (ANDROID_SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION == sensorPixelModeEntry.data.u8[0]) {
+            tag = ANDROID_CONTROL_AVAILABLE_HIGH_SPEED_VIDEO_CONFIGURATIONS_MAXIMUM_RESOLUTION;
+        }
+    }
+
+    const auto fpsRange = metadata.find(ANDROID_CONTROL_AE_TARGET_FPS_RANGE);
+    if (fpsRange.count > 1) {
+        auto configEntry = mDeviceInfo.find(tag);
+        for (size_t index = 4; index < configEntry.count; index += 5) {
+            if (stream->getWidth() == static_cast<uint32_t>(configEntry.data.i32[index - 4]) &&
+                stream->getHeight() == static_cast<uint32_t>(configEntry.data.i32[index - 3]) &&
+                fpsRange.data.i32[0] == configEntry.data.i32[index - 2] &&
+                fpsRange.data.i32[1] == configEntry.data.i32[index - 1]) {
+                const int maxBatchSize = configEntry.data.i32[index - 1] / 30;
+                const int reportedSize = configEntry.data.i32[index];
+
+                if (maxBatchSize % reportedSize == 0 && requestList->size() % reportedSize == 0) {
+                    batchSize = reportedSize;
+                    ALOGVV("Matching high speed configuration found. Limit batch size to %d",
+                           batchSize);
+                } else if (maxBatchSize % reportedSize == 0 &&
+                           reportedSize % requestList->size() == 0) {
+                    ALOGVV("Matching high speed configuration found, but requested batch size is "
+                           "divisor of batch_size_max. No need to limit batch size.");
+                } else {
+                    ALOGW("Matching high speed configuration found, but batch_size_max is not a "
+                          "divisor of corresponding fps_max/30 or requested batch size is not a "
+                          "divisor of batch_size_max, (fps_max %d, batch_size_max %d, requested "
+                          "batch size %zu)",
+                          configEntry.data.i32[index - 1], reportedSize, requestList->size());
+                }
+                break;
+            }
+        }
+    }
+
+    for (auto request = requestList->begin(); request != requestList->end(); request++) {
+        if (requestList->distance(requestList->begin(), request) % batchSize == 0) {
+            (*request)->mBatchSize = batchSize;
+        }
+    }
+
+    return batchSize;
+}
+
 CameraMetadata Camera3Device::getLatestRequestLocked() {
     ALOGV("%s", __FUNCTION__);
 
@@ -3041,7 +2963,8 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         sp<StatusTracker> statusTracker,
         sp<HalInterface> interface, const Vector<int32_t>& sessionParamKeys,
         bool useHalBufManager,
-        bool supportCameraMute) :
+        bool supportCameraMute,
+        bool overrideToPortrait) :
         Thread(/*canCallJava*/false),
         mParent(parent),
         mStatusTracker(statusTracker),
@@ -3070,7 +2993,8 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         mSessionParamKeys(sessionParamKeys),
         mLatestSessionParams(sessionParamKeys.size()),
         mUseHalBufManager(useHalBufManager),
-        mSupportCameraMute(supportCameraMute){
+        mSupportCameraMute(supportCameraMute),
+        mOverrideToPortrait(overrideToPortrait) {
     mStatusId = statusTracker->addComponent("RequestThread");
 }
 

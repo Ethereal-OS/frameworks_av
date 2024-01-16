@@ -128,6 +128,7 @@ public:
     static int           getNumberOfCameras();
 
     static status_t      getCameraInfo(int cameraId,
+                                       bool overrideToPortrait,
                                        /*out*/
                                        struct hardware::CameraInfo* cameraInfo);
 

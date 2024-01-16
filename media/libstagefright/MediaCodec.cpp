@@ -2015,7 +2015,8 @@ static bool connectFormatShaper() {
         // fall back to the system partition, if present.
         //
         if (sShaperOps == NULL) {
-
+            if (libHandle != NULL)
+                dlclose(libHandle);
             libHandle = dlopen(libraryName.c_str(), RTLD_NOW|RTLD_NODELETE);
 
             if (libHandle != NULL) {
@@ -4841,7 +4842,7 @@ void MediaCodec::handleOutputFormatChangeIfNeeded(const sp<MediaCodecBuffer> &bu
         // rendering.
         int32_t dataSpace;
         if (mOutputFormat->findInt32("android._dataspace", &dataSpace)) {
-            ALOGD("[%s] setting dataspace on output surface to #%x",
+            ALOGD("[%s] setting dataspace on output surface to %#x",
                     mComponentName.c_str(), dataSpace);
             int err = native_window_set_buffers_data_space(
                     mSurface.get(), (android_dataspace)dataSpace);
@@ -5413,7 +5414,7 @@ status_t MediaCodec::onReleaseOutputBuffer(const sp<AMessage> &msg) {
 MediaCodec::BufferInfo *MediaCodec::peekNextPortBuffer(int32_t portIndex) {
     CHECK(portIndex == kPortIndexInput || portIndex == kPortIndexOutput);
 
-    List<size_t> *availBuffers = &mAvailPortBuffers[portIndex];
+    std::list<size_t> *availBuffers = &mAvailPortBuffers[portIndex];
 
     if (availBuffers->empty()) {
         return nullptr;
@@ -5430,7 +5431,7 @@ ssize_t MediaCodec::dequeuePortBuffer(int32_t portIndex) {
         return -EAGAIN;
     }
 
-    List<size_t> *availBuffers = &mAvailPortBuffers[portIndex];
+    std::list<size_t> *availBuffers = &mAvailPortBuffers[portIndex];
     size_t index = *availBuffers->begin();
     CHECK_EQ(info, &mPortBuffers[portIndex][index]);
     availBuffers->erase(availBuffers->begin());

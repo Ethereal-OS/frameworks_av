@@ -2933,13 +2933,15 @@ sp<AudioFlinger::ThreadBase> AudioFlinger::openOutput_l(audio_module_handle_t mo
                 ALOGV("openOutput_l() created spatializer output: ID %d thread %p",
                       *output, thread.get());
             } else if (flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) {
-                thread = new OffloadThread(this, outputStream, *output, mSystemReady);
+                thread = new OffloadThread(this, outputStream, *output,
+                        mSystemReady, halConfig->offload_info);
                 ALOGV("openOutput_l() created offload output: ID %d thread %p",
                       *output, thread.get());
             } else if ((flags & AUDIO_OUTPUT_FLAG_DIRECT)
                     || !isValidPcmSinkFormat(halConfig->format)
                     || !isValidPcmSinkChannelMask(halConfig->channel_mask)) {
-                thread = new DirectOutputThread(this, outputStream, *output, mSystemReady);
+                thread = new DirectOutputThread(this, outputStream, *output,
+                        mSystemReady, halConfig->offload_info);
                 ALOGV("openOutput_l() created direct output: ID %d thread %p",
                       *output, thread.get());
             } else {
@@ -4590,12 +4592,9 @@ bool AudioFlinger::updateOrphanEffectChains(const sp<AudioFlinger::EffectModule>
 // ----------------------------------------------------------------------------
 
 status_t AudioFlinger::onTransactWrapper(TransactionCode code,
-                                         const Parcel& data,
-                                         uint32_t flags,
+                                         [[maybe_unused]] const Parcel& data,
+                                         [[maybe_unused]] uint32_t flags,
                                          const std::function<status_t()>& delegate) {
-    (void) data;
-    (void) flags;
-
     // make sure transactions reserved to AudioPolicyManager do not come from other processes
     switch (code) {
         case TransactionCode::SET_STREAM_VOLUME:

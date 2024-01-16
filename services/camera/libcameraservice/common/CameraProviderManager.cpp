@@ -323,13 +323,13 @@ status_t CameraProviderManager::getResourceCost(const std::string &id,
 }
 
 status_t CameraProviderManager::getCameraInfo(const std::string &id,
-        hardware::CameraInfo* info) const {
+        bool overrideToPortrait, int *portraitRotation, hardware::CameraInfo* info) const {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
 
     auto deviceInfo = findDeviceInfoLocked(id);
     if (deviceInfo == nullptr) return NAME_NOT_FOUND;
 
-    return deviceInfo->getCameraInfo(info);
+    return deviceInfo->getCameraInfo(overrideToPortrait, portraitRotation, info);
 }
 
 status_t CameraProviderManager::isSessionConfigurationSupported(const std::string& id,
@@ -361,9 +361,11 @@ status_t CameraProviderManager::getCameraIdIPCTransport(const std::string &id,
 }
 
 status_t CameraProviderManager::getCameraCharacteristics(const std::string &id,
-        bool overrideForPerfClass, CameraMetadata* characteristics) const {
+        bool overrideForPerfClass, CameraMetadata* characteristics,
+        bool overrideToPortrait) const {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
-    return getCameraCharacteristicsLocked(id, overrideForPerfClass, characteristics);
+    return getCameraCharacteristicsLocked(id, overrideForPerfClass, characteristics,
+            overrideToPortrait);
 }
 
 status_t CameraProviderManager::getHighestSupportedVersion(const std::string &id,
@@ -584,7 +586,11 @@ status_t CameraProviderManager::notifyDeviceStateChange(int64_t newState) {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
     mDeviceState = newState;
     status_t res = OK;
-    for (auto& provider : mProviders) {
+    // Make a copy of mProviders because we unlock mInterfaceMutex temporarily
+    // within the loop. It's possible that during the time mInterfaceMutex is
+    // unlocked, mProviders has changed.
+    auto providers = mProviders;
+    for (auto& provider : providers) {
         ALOGV("%s: Notifying %s for new state 0x%" PRIx64,
                 __FUNCTION__, provider->mProviderName.c_str(), newState);
         // b/199240726 Camera providers can for example try to add/remove
@@ -948,6 +954,15 @@ SystemCameraKind CameraProviderManager::ProviderInfo::DeviceInfo3::getSystemCame
     if (entryCap.count == 1 &&
             entryCap.data.u8[0] == ANDROID_REQUEST_AVAILABLE_CAPABILITIES_SECURE_IMAGE_DATA) {
         return SystemCameraKind::HIDDEN_SECURE_CAMERA;
+    }
+
+    // Go through the capabilities and check if it has
+    // ANDROID_REQUEST_AVAILABLE_CAPABILITIES_SYSTEM_CAMERA
+    for (size_t i = 0; i < entryCap.count; ++i) {
+        uint8_t capability = entryCap.data.u8[i];
+        if (capability == ANDROID_REQUEST_AVAILABLE_CAPABILITIES_SYSTEM_CAMERA) {
+            return SystemCameraKind::SYSTEM_ONLY_CAMERA;
+        }
     }
     return SystemCameraKind::PUBLIC;
 }
@@ -1381,6 +1396,27 @@ status_t CameraProviderManager::ProviderInfo::DeviceInfo3::addPreCorrectionActiv
             return res;
         }
     }
+
+    return res;
+}
+
+status_t CameraProviderManager::ProviderInfo::DeviceInfo3::addReadoutTimestampTag(
+        bool readoutTimestampSupported) {
+    status_t res = OK;
+    auto& c = mCameraCharacteristics;
+
+    auto entry = c.find(ANDROID_SENSOR_READOUT_TIMESTAMP);
+    if (entry.count != 0) {
+        ALOGE("%s: CameraCharacteristics must not contain ANDROID_SENSOR_READOUT_TIMESTAMP!",
+                __FUNCTION__);
+    }
+
+    uint8_t readoutTimestamp = ANDROID_SENSOR_READOUT_TIMESTAMP_NOT_SUPPORTED;
+    if (readoutTimestampSupported) {
+        readoutTimestamp = ANDROID_SENSOR_READOUT_TIMESTAMP_HARDWARE;
+    }
+
+    res = c.update(ANDROID_SENSOR_READOUT_TIMESTAMP, &readoutTimestamp, 1);
 
     return res;
 }
@@ -1822,13 +1858,12 @@ sp<CameraProviderManager::StatusListener> CameraProviderManager::getStatusListen
 CameraProviderManager::ProviderInfo::ProviderInfo(
         const std::string &providerName,
         const std::string &providerInstance,
-        CameraProviderManager *manager) :
+        [[maybe_unused]] CameraProviderManager *manager) :
         mProviderName(providerName),
         mProviderInstance(providerInstance),
         mProviderTagid(generateVendorTagId(providerName)),
         mUniqueDeviceCount(0),
         mManager(manager) {
-    (void) mManager;
 }
 
 const std::string& CameraProviderManager::ProviderInfo::getType() const {
@@ -1984,7 +2019,9 @@ status_t CameraProviderManager::ProviderInfo::dump(int fd, const Vector<String16
         dprintf(fd, "    Has a flash unit: %s\n",
                 device->hasFlashUnit() ? "true" : "false");
         hardware::CameraInfo info;
-        status_t res = device->getCameraInfo(&info);
+        int portraitRotation;
+        status_t res = device->getCameraInfo(/*overrideToPortrait*/false, &portraitRotation,
+                &info);
         if (res != OK) {
             dprintf(fd, "   <Error reading camera info: %s (%d)>\n",
                     strerror(-res), res);
@@ -2267,6 +2304,7 @@ void CameraProviderManager::ProviderInfo::DeviceInfo3::notifyDeviceStateChange(i
 }
 
 status_t CameraProviderManager::ProviderInfo::DeviceInfo3::getCameraInfo(
+        bool overrideToPortrait, int *portraitRotation,
         hardware::CameraInfo *info) const {
     if (info == nullptr) return BAD_VALUE;
 
@@ -2297,6 +2335,17 @@ status_t CameraProviderManager::ProviderInfo::DeviceInfo3::getCameraInfo(
         return NAME_NOT_FOUND;
     }
 
+    if (overrideToPortrait && (info->orientation == 0 || info->orientation == 180)) {
+        *portraitRotation = 90;
+        if (info->facing == hardware::CAMERA_FACING_FRONT) {
+            info->orientation = (360 + info->orientation - 90) % 360;
+        } else {
+            info->orientation = (360 + info->orientation + 90) % 360;
+        }
+    } else {
+        *portraitRotation = 0;
+    }
+
     return OK;
 }
 bool CameraProviderManager::ProviderInfo::DeviceInfo3::isAPI1Compatible() const {
@@ -2322,7 +2371,7 @@ bool CameraProviderManager::ProviderInfo::DeviceInfo3::isAPI1Compatible() const 
 }
 
 status_t CameraProviderManager::ProviderInfo::DeviceInfo3::getCameraCharacteristics(
-        bool overrideForPerfClass, CameraMetadata *characteristics) const {
+        bool overrideForPerfClass, CameraMetadata *characteristics, bool overrideToPortrait) {
     if (characteristics == nullptr) return BAD_VALUE;
 
     if (!overrideForPerfClass && mCameraCharNoPCOverride != nullptr) {
@@ -2691,10 +2740,12 @@ status_t CameraProviderManager::isConcurrentSessionConfigurationSupported(
 }
 
 status_t CameraProviderManager::getCameraCharacteristicsLocked(const std::string &id,
-        bool overrideForPerfClass, CameraMetadata* characteristics) const {
+        bool overrideForPerfClass, CameraMetadata* characteristics,
+        bool overrideToPortrait) const {
     auto deviceInfo = findDeviceInfoLocked(id);
     if (deviceInfo != nullptr) {
-        return deviceInfo->getCameraCharacteristics(overrideForPerfClass, characteristics);
+        return deviceInfo->getCameraCharacteristics(overrideForPerfClass, characteristics,
+                overrideToPortrait);
     }
 
     // Find hidden physical camera characteristics
@@ -2729,7 +2780,9 @@ void CameraProviderManager::filterLogicalCameraIdsLocked(
         combo.push_back(deviceId);
 
         hardware::CameraInfo info;
-        status_t res = deviceInfo->getCameraInfo(&info);
+        int portraitRotation;
+        status_t res = deviceInfo->getCameraInfo(/*overrideToPortrait*/false, &portraitRotation,
+                &info);
         if (res != OK) {
             ALOGE("%s: Error reading camera info: %s (%d)", __FUNCTION__, strerror(-res), res);
             continue;

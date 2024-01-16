@@ -1024,7 +1024,7 @@ void CCodec::configure(const sp<AMessage> &msg) {
             C2StoreFlexiblePixelFormatDescriptorsInfo *pixelFormatInfo = nullptr;
             int vendorSdkVersion = base::GetIntProperty(
                     "ro.vendor.build.version.sdk", android_get_device_api_level());
-            if (vendorSdkVersion >= __ANDROID_API_S__ && mClient->query(
+            if (mClient->query(
                         {},
                         {C2StoreFlexiblePixelFormatDescriptorsInfo::PARAM_TYPE},
                         C2_MAY_BLOCK,
@@ -1085,8 +1085,7 @@ void CCodec::configure(const sp<AMessage> &msg) {
             } else {
                 if ((config->mDomain & Config::IS_ENCODER) || !surface) {
                     if (vendorSdkVersion < __ANDROID_API_S__ &&
-                            (format == COLOR_FormatYUV420Flexible ||
-                             format == COLOR_FormatYUV420Planar ||
+                            (format == COLOR_FormatYUV420Planar ||
                              format == COLOR_FormatYUV420PackedPlanar ||
                              format == COLOR_FormatYUV420SemiPlanar ||
                              format == COLOR_FormatYUV420PackedSemiPlanar)) {
@@ -1802,6 +1801,10 @@ void CCodec::start() {
                            ACTION_CODE_FATAL);
         return;
     }
+
+    // clear the deadline after the component starts
+    setDeadline(TimePoint::max(), 0ms, "none");
+
     sp<AMessage> inputFormat;
     sp<AMessage> outputFormat;
     status_t err2 = OK;
@@ -2559,53 +2562,6 @@ void CCodec::initiateReleaseIfStuck() {
             name = deadline->getName();
         }
         if (deadline->get() != TimePoint::max()) {
-            pendingDeadline = true;
-        }
-    }
-    bool tunneled = false;
-    bool isMediaTypeKnown = false;
-    {
-        static const std::set<std::string> kKnownMediaTypes{
-            MIMETYPE_VIDEO_VP8,
-            MIMETYPE_VIDEO_VP9,
-            MIMETYPE_VIDEO_AV1,
-            MIMETYPE_VIDEO_AVC,
-            MIMETYPE_VIDEO_HEVC,
-            MIMETYPE_VIDEO_MPEG4,
-            MIMETYPE_VIDEO_H263,
-            MIMETYPE_VIDEO_MPEG2,
-            MIMETYPE_VIDEO_RAW,
-            MIMETYPE_VIDEO_DOLBY_VISION,
-
-            MIMETYPE_AUDIO_AMR_NB,
-            MIMETYPE_AUDIO_AMR_WB,
-            MIMETYPE_AUDIO_MPEG,
-            MIMETYPE_AUDIO_AAC,
-            MIMETYPE_AUDIO_QCELP,
-            MIMETYPE_AUDIO_VORBIS,
-            MIMETYPE_AUDIO_OPUS,
-            MIMETYPE_AUDIO_G711_ALAW,
-            MIMETYPE_AUDIO_G711_MLAW,
-            MIMETYPE_AUDIO_RAW,
-            MIMETYPE_AUDIO_FLAC,
-            MIMETYPE_AUDIO_MSGSM,
-            MIMETYPE_AUDIO_AC3,
-            MIMETYPE_AUDIO_EAC3,
-
-            MIMETYPE_IMAGE_ANDROID_HEIC,
-        };
-        Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
-        const std::unique_ptr<Config> &config = *configLocked;
-        tunneled = config->mTunneled;
-        isMediaTypeKnown = (kKnownMediaTypes.count(config->mCodingMediaType) != 0);
-    }
-    if (!tunneled && isMediaTypeKnown && name.empty()) {
-        constexpr std::chrono::steady_clock::duration kWorkDurationThreshold = 3s;
-        std::chrono::steady_clock::duration elapsed = mChannel->elapsed();
-        if (elapsed >= kWorkDurationThreshold) {
-            name = "queue";
-        }
-        if (elapsed > 0s) {
             pendingDeadline = true;
         }
     }

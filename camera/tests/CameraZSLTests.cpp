@@ -182,7 +182,8 @@ TEST_F(CameraZSLTests, TestAllPictureSizes) {
 
         CameraMetadata metadata;
         rc = mCameraService->getCameraCharacteristics(cameraIdStr,
-                /*targetSdkVersion*/__ANDROID_API_FUTURE__, &metadata);
+                /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*overrideToPortrait*/false,
+                &metadata);
         if (!rc.isOk()) {
             // The test is relevant only for cameras with Hal 3.x
             // support.

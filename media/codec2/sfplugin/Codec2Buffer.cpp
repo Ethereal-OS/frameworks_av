@@ -22,6 +22,7 @@
 
 #include <aidl/android/hardware/graphics/common/Cta861_3.h>
 #include <aidl/android/hardware/graphics/common/Smpte2086.h>
+#include <android-base/no_destructor.h>
 #include <android-base/properties.h>
 #include <android/hardware/cas/native/1.0/types.h>
 #include <android/hardware/drm/1.0/types.h>
@@ -477,19 +478,56 @@ public:
                 mInitCheck = NO_INIT;
                 return;
             case C2PlanarLayout::TYPE_RGB:
-                ALOGD("Converter: unrecognized color format "
-                        "(client %d component %d) for RGB layout",
-                        mClientColorFormat, mComponentColorFormat);
-                mInitCheck = NO_INIT;
+                mediaImage->mType = MediaImage2::MEDIA_IMAGE_TYPE_RGB;
                 // TODO: support MediaImage layout
-                return;
+                switch (mClientColorFormat) {
+                    case COLOR_FormatSurface:
+                    case COLOR_FormatRGBFlexible:
+                    case COLOR_Format24bitBGR888:
+                    case COLOR_Format24bitRGB888:
+                        ALOGD("Converter: accept color format "
+                                "(client %d component %d) for RGB layout",
+                                mClientColorFormat, mComponentColorFormat);
+                        break;
+                    default:
+                        ALOGD("Converter: unrecognized color format "
+                                "(client %d component %d) for RGB layout",
+                                mClientColorFormat, mComponentColorFormat);
+                        mInitCheck = BAD_VALUE;
+                        return;
+                }
+                if (layout.numPlanes != 3) {
+                    ALOGD("Converter: %d planes for RGB layout", layout.numPlanes);
+                    mInitCheck = BAD_VALUE;
+                    return;
+                }
+                break;
             case C2PlanarLayout::TYPE_RGBA:
-                ALOGD("Converter: unrecognized color format "
-                        "(client %d component %d) for RGBA layout",
-                        mClientColorFormat, mComponentColorFormat);
-                mInitCheck = NO_INIT;
+                mediaImage->mType = MediaImage2::MEDIA_IMAGE_TYPE_RGBA;
                 // TODO: support MediaImage layout
-                return;
+                switch (mClientColorFormat) {
+                    case COLOR_FormatSurface:
+                    case COLOR_FormatRGBAFlexible:
+                    case COLOR_Format32bitABGR8888:
+                    case COLOR_Format32bitARGB8888:
+                    case COLOR_Format32bitBGRA8888:
+                        ALOGD("Converter: accept color format "
+                                "(client %d component %d) for RGBA layout",
+                                mClientColorFormat, mComponentColorFormat);
+                        break;
+                    default:
+                        ALOGD("Converter: unrecognized color format "
+                                "(client %d component %d) for RGBA layout",
+                                mClientColorFormat, mComponentColorFormat);
+                        mInitCheck = BAD_VALUE;
+                        return;
+                }
+                if (layout.numPlanes != 4) {
+                    ALOGD("Converter: %d planes for RGBA layout", layout.numPlanes);
+                    mInitCheck = BAD_VALUE;
+                    return;
+                }
+                break;
             default:
                 mediaImage->mType = MediaImage2::MEDIA_IMAGE_TYPE_UNKNOWN;
                 if (layout.numPlanes == 1) {
@@ -843,6 +881,10 @@ sp<ConstGraphicBlockBuffer> ConstGraphicBlockBuffer::AllocateEmpty(
         }
     }
     sp<ABuffer> aBuffer(alloc(align(width, 16) * align(height, 16) * bpp / 8));
+    if (aBuffer == nullptr) {
+        ALOGD("%s: failed to allocate buffer", __func__);
+        return nullptr;
+    }
     return new ConstGraphicBlockBuffer(
             format,
             aBuffer,
@@ -1015,8 +1057,8 @@ using IMapper4 = ::android::hardware::graphics::mapper::V4_0::IMapper;
 namespace {
 
 sp<IMapper4> GetMapper4() {
-    static sp<IMapper4> sMapper = IMapper4::getService();
-    return sMapper;
+    static ::android::base::NoDestructor<sp<IMapper4>> sMapper(IMapper4::getService());
+    return *sMapper;
 }
 
 class Gralloc4Buffer {
@@ -1134,6 +1176,11 @@ c2_status_t GetHdrMetadataFromGralloc4Handle(
             err = C2_CORRUPTED;
         }
     }
+
+    if (err != C2_OK) {
+        staticInfo->reset();
+    }
+
     if (dynamicInfo) {
         ALOGV("Grabbing dynamic HDR info from gralloc4 metadata");
         dynamicInfo->reset();

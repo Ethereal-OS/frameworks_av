@@ -127,7 +127,8 @@ status_t AudioPolicyEffects::addInputEffects(audio_io_handle_t input,
             attributionSource.packageName = "android";
             attributionSource.token = sp<BBinder>::make();
             sp<AudioEffect> fx = new AudioEffect(attributionSource);
-            fx->set(NULL, &effect->mUuid, -1, 0, 0, audioSession, input);
+            fx->set(nullptr /*type */, &effect->mUuid, -1 /* priority */, nullptr /* callback */,
+                    audioSession, input);
             status_t status = fx->initCheck();
             if (status != NO_ERROR && status != ALREADY_EXISTS) {
                 ALOGW("addInputEffects(): failed to create Fx %s on source %d",
@@ -279,7 +280,8 @@ status_t AudioPolicyEffects::addOutputSessionEffects(audio_io_handle_t output,
             attributionSource.packageName = "android";
             attributionSource.token = sp<BBinder>::make();
             sp<AudioEffect> fx = new AudioEffect(attributionSource);
-            fx->set(NULL, &effect->mUuid, 0, 0, 0, audioSession, output);
+            fx->set(nullptr /* type */, &effect->mUuid, 0 /* priority */, nullptr /* callback */,
+                    audioSession, output);
             status_t status = fx->initCheck();
             if (status != NO_ERROR && status != ALREADY_EXISTS) {
                 ALOGE("addOutputSessionEffects(): failed to create Fx  %s on session %d",
@@ -915,8 +917,7 @@ status_t AudioPolicyEffects::loadAudioEffectXmlConfig() {
         for (auto& stream : processingChain) {
             auto effectDescs = std::make_unique<EffectDescVector>();
             for (auto& effect : stream.effects) {
-                effectDescs->mEffects.add(
-                        new EffectDesc{effect.get().name.c_str(), effect.get().uuid});
+                effectDescs->mEffects.add(new EffectDesc{effect->name.c_str(), effect->uuid});
             }
             streams.add(stream.type, effectDescs.release());
         }
@@ -927,8 +928,7 @@ status_t AudioPolicyEffects::loadAudioEffectXmlConfig() {
 
             auto effectDescs = std::make_unique<EffectDescVector>();
             for (auto& effect : deviceProcess.effects) {
-                effectDescs->mEffects.add(
-                        new EffectDesc{effect.get().name.c_str(), effect.get().uuid});
+                effectDescs->mEffects.add(new EffectDesc{effect->name.c_str(), effect->uuid});
             }
             auto deviceEffects = std::make_unique<DeviceEffects>(
                         std::move(effectDescs), deviceProcess.type, deviceProcess.address);
@@ -984,8 +984,8 @@ void AudioPolicyEffects::initDefaultDeviceEffects()
             attributionSource.packageName = "android";
             attributionSource.token = sp<BBinder>::make();
             sp<AudioEffect> fx = new AudioEffect(attributionSource);
-            fx->set(EFFECT_UUID_NULL, &effectDesc->mUuid, 0, nullptr,
-                    nullptr, AUDIO_SESSION_DEVICE, AUDIO_IO_HANDLE_NONE,
+            fx->set(EFFECT_UUID_NULL, &effectDesc->mUuid, 0 /* priority */, nullptr /* callback */,
+                    AUDIO_SESSION_DEVICE, AUDIO_IO_HANDLE_NONE,
                     AudioDeviceTypeAddr{deviceEffects->getDeviceType(),
                                         deviceEffects->getDeviceAddress()});
             status_t status = fx->initCheck();

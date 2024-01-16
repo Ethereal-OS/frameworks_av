@@ -703,9 +703,10 @@ sp<Camera3Device::RequestThread> HidlCamera3Device::createNewRequestThread(
                 sp<Camera3Device::HalInterface> interface,
                 const Vector<int32_t>& sessionParamKeys,
                 bool useHalBufManager,
-                bool supportCameraMute) {
+                bool supportCameraMute,
+                bool overrideToPortrait) {
         return new HidlRequestThread(parent, statusTracker, interface, sessionParamKeys,
-                useHalBufManager, supportCameraMute);
+                useHalBufManager, supportCameraMute, overrideToPortrait);
 };
 
 sp<Camera3Device::Camera3DeviceInjectionMethods>
@@ -1698,9 +1699,10 @@ HidlCamera3Device::HidlRequestThread::HidlRequestThread(wp<Camera3Device> parent
                 sp<HalInterface> interface,
                 const Vector<int32_t>& sessionParamKeys,
                 bool useHalBufManager,
-                bool supportCameraMute) :
+                bool supportCameraMute,
+                bool overrideToPortrait) :
           RequestThread(parent, statusTracker, interface, sessionParamKeys, useHalBufManager,
-                  supportCameraMute) {}
+                  supportCameraMute, overrideToPortrait) {}
 
 status_t HidlCamera3Device::HidlRequestThread::switchToOffline(
         const std::vector<int32_t>& streamsToKeep,

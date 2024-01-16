@@ -692,6 +692,7 @@ camera_status_t ACameraManager::getCameraCharacteristics(
         ALOGE("%s: Cannot reach camera service!", __FUNCTION__);
         return ACAMERA_ERROR_CAMERA_DISCONNECTED;
     }
+
     CameraMetadata rawMetadata;
     int targetSdkVersion = android_get_application_target_sdk_version();
     binder::Status serviceRet = cs->getCameraCharacteristics(String16(cameraIdStr),
