@@ -2140,9 +2140,19 @@ void AudioFlinger::PlaybackThread::onFirstRef()
     if (!isStreamInitialized()) {
         ALOGE("The stream is not open yet"); // This should not happen.
     } else {
-        // setEventCallback will need a strong pointer as a parameter. Calling it
-        // here instead of constructor of PlaybackThread so that the onFirstRef
-        // callback would not be made on an incompletely constructed object.
+        // Callbacks take strong or weak pointers as a parameter.
+        // Since PlaybackThread passes itself as a callback handler, it can only
+        // be done outside of the constructor. Creating weak and especially strong
+        // pointers to a refcounted object in its own constructor is strongly
+        // discouraged, see comments in system/core/libutils/include/utils/RefBase.h.
+        // Even if a function takes a weak pointer, it is possible that it will
+        // need to convert it to a strong pointer down the line.
+        if (mOutput->flags & AUDIO_OUTPUT_FLAG_NON_BLOCKING &&
+                mOutput->stream->setCallback(this) == OK) {
+            mUseAsyncWrite = true;
+            mCallbackThread = new AudioFlinger::AsyncCallbackThread(this);
+        }
+
         if (mOutput->stream->setEventCallback(this) != OK) {
             ALOGD("Failed to add event callback");
         }
@@ -2852,6 +2862,9 @@ bool AudioFlinger::PlaybackThread::destroyTrack_l(const sp<Track>& track)
     if (!trackActive) {
         removeTrack_l(track);
     } else if (track->isFastTrack() || track->isOffloaded() || track->isDirect()) {
+        if (track->isPausePending()) {
+            track->pauseAck();
+        }
         track->mState = TrackBase::STOPPING_1;
     }
 
@@ -2946,7 +2959,14 @@ void AudioFlinger::PlaybackThread::onError()
 void AudioFlinger::PlaybackThread::onCodecFormatChanged(
         const std::basic_string<uint8_t>& metadataBs)
 {
-    std::thread([this, metadataBs]() {
+    wp<AudioFlinger::PlaybackThread> weakPointerThis = this;
+    std::thread([this, metadataBs, weakPointerThis]() {
+            sp<AudioFlinger::PlaybackThread> playbackThread = weakPointerThis.promote();
+            if (playbackThread == nullptr) {
+                ALOGW("PlaybackThread was destroyed, skip codec format change event");
+                return;
+            }
+
             audio_utils::metadata::Data metadata =
                     audio_utils::metadata::dataFromByteString(metadataBs);
             if (metadata.empty()) {
@@ -3035,13 +3055,6 @@ void AudioFlinger::PlaybackThread::readOutputParameters_l()
     if (hasMixer() && (mFrameCount & 15)) {
         ALOGW("HAL output buffer size is %zu frames but AudioMixer requires multiples of 16 frames",
                 mFrameCount);
-    }
-
-    if (mOutput->flags & AUDIO_OUTPUT_FLAG_NON_BLOCKING) {
-        if (mOutput->stream->setCallback(this) == OK) {
-            mUseAsyncWrite = true;
-            mCallbackThread = new AudioFlinger::AsyncCallbackThread(this);
-        }
     }
 
     mHwSupportsPause = false;
@@ -3320,7 +3333,7 @@ bool AudioFlinger::PlaybackThread::isValidSyncEvent(const sp<SyncEvent>& event) 
 }
 
 void AudioFlinger::PlaybackThread::threadLoop_removeTracks(
-        const Vector< sp<Track> >& tracksToRemove)
+        [[maybe_unused]] const Vector< sp<Track> >& tracksToRemove)
 {
     // Miscellaneous track cleanup when removed from the active list,
     // called without Thread lock but synchronized with threadLoop processing.
@@ -3331,8 +3344,6 @@ void AudioFlinger::PlaybackThread::threadLoop_removeTracks(
             addBatteryData(IMediaPlayerService::kBatteryDataAudioFlingerStop);
         }
     }
-#else
-    (void)tracksToRemove; // suppress unused warning
 #endif
 }
 
@@ -4592,7 +4603,8 @@ status_t AudioFlinger::PlaybackThread::handleVoipVolume_l(float *volume)
     if ((mOutput->flags & AUDIO_OUTPUT_FLAG_VOIP_RX) != 0) {
         if (*volume != mLeftVolFloat) {
             result = mOutput->stream->setVolume(*volume, *volume);
-            ALOGE_IF(result != OK,
+            // HAL can return INVALID_OPERATION if operation is not supported.
+            ALOGE_IF(result != OK && result != INVALID_OPERATION,
                      "Error when setting output stream volume: %d", result);
             if (result == NO_ERROR) {
                 mLeftVolFloat = *volume;
@@ -5859,7 +5871,7 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::MixerThread::prepareTrac
     }
 
     // Push the new FastMixer state if necessary
-    bool pauseAudioWatchdog = false;
+    [[maybe_unused]] bool pauseAudioWatchdog = false;
     if (didModify) {
         state->mFastTracksGen++;
         // if the fast mixer was active, but now there are no fast tracks, then put it in cold idle
@@ -6175,8 +6187,10 @@ void AudioFlinger::MixerThread::cacheParameters_l()
 // ----------------------------------------------------------------------------
 
 AudioFlinger::DirectOutputThread::DirectOutputThread(const sp<AudioFlinger>& audioFlinger,
-        AudioStreamOut* output, audio_io_handle_t id, ThreadBase::type_t type, bool systemReady)
+        AudioStreamOut* output, audio_io_handle_t id, ThreadBase::type_t type, bool systemReady,
+        const audio_offload_info_t& offloadInfo)
     :   PlaybackThread(audioFlinger, output, id, type, systemReady)
+    , mOffloadInfo(offloadInfo)
 {
     setMasterBalance(audioFlinger->getMasterBalance_l());
 }
@@ -6225,12 +6239,17 @@ void AudioFlinger::DirectOutputThread::processVolume_l(Track *track, bool lastTr
         if (left > GAIN_FLOAT_UNITY) {
             left = GAIN_FLOAT_UNITY;
         }
-        left *= v * mMasterBalanceLeft; // DirectOutputThread balance applied as track volume
         right = float_from_gain(gain_minifloat_unpack_right(vlr));
         if (right > GAIN_FLOAT_UNITY) {
             right = GAIN_FLOAT_UNITY;
         }
-        right *= v * mMasterBalanceRight;
+        left *= v;
+        right *= v;
+        if (mAudioFlinger->getMode() != AUDIO_MODE_IN_COMMUNICATION
+                || audio_channel_count_from_out_mask(mChannelMask) > 1) {
+            left *= mMasterBalanceLeft; // DirectOutputThread balance applied as track volume
+            right *= mMasterBalanceRight;
+        }
     }
 
     if (lastTrack) {
@@ -6268,7 +6287,8 @@ void AudioFlinger::DirectOutputThread::onAddNewTrack_l()
                 mFlushPending = true;
             }
         } else /* mType == OFFLOAD */ {
-            if (previousTrack->sessionId() != latestTrack->sessionId()) {
+            if (previousTrack->sessionId() != latestTrack->sessionId() ||
+                previousTrack->isFlushPending()) {
                 mFlushPending = true;
             }
         }
@@ -6444,7 +6464,8 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::DirectOutputThread::prep
                 // fill a buffer, then remove it from active list.
                 // Only consider last track started for mixer state control
                 bool isTimestampAdvancing = mIsTimestampAdvancing.check(mOutput);
-                if (--(track->mRetryCount) <= 0) {
+                if (!isTunerStream()  // tuner streams remain active in underrun
+                        && --(track->mRetryCount) <= 0) {
                     if (isTimestampAdvancing) { // HAL is still playing audio, give us more time.
                         track->mRetryCount = kMaxTrackRetriesOffload;
                     } else {
@@ -6488,6 +6509,7 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::DirectOutputThread::prep
             (doHwPause || (mFlushPending && !mHwPaused && (count != 0)))) {
         status_t result = mOutput->stream->pause();
         ALOGE_IF(result != OK, "Error when pausing output stream: %d", result);
+        doHwResume = !doHwPause;  // resume if pause is due to flush.
     }
     if (mFlushPending) {
         flushHw_l();
@@ -6807,8 +6829,9 @@ void AudioFlinger::AsyncCallbackThread::setAsyncError()
 
 // ----------------------------------------------------------------------------
 AudioFlinger::OffloadThread::OffloadThread(const sp<AudioFlinger>& audioFlinger,
-        AudioStreamOut* output, audio_io_handle_t id, bool systemReady)
-    :   DirectOutputThread(audioFlinger, output, id, OFFLOAD, systemReady),
+        AudioStreamOut* output, audio_io_handle_t id, bool systemReady,
+        const audio_offload_info_t& offloadInfo)
+    :   DirectOutputThread(audioFlinger, output, id, OFFLOAD, systemReady, offloadInfo),
         mPausedWriteLength(0), mPausedBytesRemaining(0), mKeepWakeLock(true)
 {
     //FIXME: mStandby should be set to true by ThreadBase constructo
@@ -7027,7 +7050,8 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::OffloadThread::prepareTr
                 // No buffers for this track. Give it a few chances to
                 // fill a buffer, then remove it from active list.
                 bool isTimestampAdvancing = mIsTimestampAdvancing.check(mOutput);
-                if (--(track->mRetryCount) <= 0) {
+                if (!isTunerStream()  // tuner streams remain active in underrun
+                        && --(track->mRetryCount) <= 0) {
                     if (isTimestampAdvancing) { // HAL is still playing audio, give us more time.
                         track->mRetryCount = kMaxTrackRetriesOffload;
                     } else {
@@ -7056,6 +7080,7 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::OffloadThread::prepareTr
     if (!mStandby && (doHwPause || (mFlushPending && !mHwPaused && (count != 0)))) {
         status_t result = mOutput->stream->pause();
         ALOGE_IF(result != OK, "Error when pausing output stream: %d", result);
+        doHwResume = !doHwPause;  // resume if pause is due to flush.
     }
     if (mFlushPending) {
         flushHw_l();
@@ -7586,7 +7611,7 @@ AudioFlinger::RecordThread::RecordThread(const sp<AudioFlinger>& audioFlinger,
     size_t numCounterOffers = 0;
     const NBAIO_Format offers[1] = {Format_from_SR_C(mSampleRate, mChannelCount, mFormat)};
 #if !LOG_NDEBUG
-    ssize_t index =
+    [[maybe_unused]] ssize_t index =
 #else
     (void)
 #endif
@@ -7605,10 +7630,11 @@ AudioFlinger::RecordThread::RecordThread(const sp<AudioFlinger>& audioFlinger,
         ALOGV("%p kUseFastCapture = Always, initFastCapture = true", this);
         break;
     case FastCapture_Static:
-        initFastCapture = (mFrameCount * 1000) / mSampleRate < kMinNormalCaptureBufferSizeMs;
-        ALOGV("%p kUseFastCapture = Static, (%lld * 1000) / %u vs %u, initFastCapture = %d",
-                this, (long long)mFrameCount, mSampleRate, kMinNormalCaptureBufferSizeMs,
-                initFastCapture);
+        initFastCapture = !mIsMsdDevice // Disable fast capture for MSD BUS devices.
+                && (mFrameCount * 1000) / mSampleRate < kMinNormalCaptureBufferSizeMs;
+        ALOGV("%p kUseFastCapture = Static, (%lld * 1000) / %u vs %u, initFastCapture = %d "
+                "mIsMsdDevice = %d", this, (long long)mFrameCount, mSampleRate,
+                kMinNormalCaptureBufferSizeMs, initFastCapture, mIsMsdDevice);
         break;
     // case FastCapture_Dynamic:
     }
@@ -7636,7 +7662,7 @@ AudioFlinger::RecordThread::RecordThread(const sp<AudioFlinger>& audioFlinger,
         Pipe *pipe = new Pipe(pipeFramesP2, format, pipeBuffer);
         const NBAIO_Format offers[1] = {format};
         size_t numCounterOffers = 0;
-        ssize_t index = pipe->negotiate(offers, 1, NULL, numCounterOffers);
+        [[maybe_unused]] ssize_t index = pipe->negotiate(offers, 1, NULL, numCounterOffers);
         ALOG_ASSERT(index == 0);
         mPipeSink = pipe;
         PipeReader *pipeReader = new PipeReader(*pipe);
@@ -9092,7 +9118,8 @@ bool AudioFlinger::RecordThread::checkForNewParameter_l(const String8& keyValueP
     audio_format_t reqFormat = mFormat;
     uint32_t samplingRate = mSampleRate;
     // TODO this may change if we want to support capture from HDMI PCM multi channel (e.g on TVs).
-    audio_channel_mask_t channelMask = audio_channel_in_mask_from_count(mChannelCount);
+    [[maybe_unused]] audio_channel_mask_t channelMask =
+                                audio_channel_in_mask_from_count(mChannelCount);
 
     AudioParameter param = AudioParameter(keyValuePair);
     int value;

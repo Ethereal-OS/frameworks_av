@@ -60,10 +60,11 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         uid_t clientUid,
         int servicePid,
         bool overrideForPerfClass,
+        bool overrideToPortrait,
         bool legacyClient):
         TClientBase(cameraService, remoteCallback, clientPackageName, systemNativeClient,
                 clientFeatureId, cameraId, api1CameraId, cameraFacing, sensorOrientation, clientPid,
-                clientUid, servicePid),
+                clientUid, servicePid, overrideToPortrait),
         mSharedCameraCallbacks(remoteCallback),
         mDeviceActive(false), mApi1CameraId(api1CameraId)
 {
@@ -117,12 +118,12 @@ status_t Camera2ClientBase<TClientBase>::initializeImpl(TProviderPtr providerPtr
         case IPCTransport::HIDL:
             mDevice =
                     new HidlCamera3Device(TClientBase::mCameraIdStr, mOverrideForPerfClass,
-                            mLegacyClient);
+                            TClientBase::mOverrideToPortrait, mLegacyClient);
             break;
         case IPCTransport::AIDL:
             mDevice =
                     new AidlCamera3Device(TClientBase::mCameraIdStr, mOverrideForPerfClass,
-                            mLegacyClient);
+                            TClientBase::mOverrideToPortrait, mLegacyClient);
              break;
         default:
             ALOGE("%s Invalid transport for camera id %s", __FUNCTION__,
@@ -279,14 +280,6 @@ binder::Status Camera2ClientBase<TClientBase>::disconnectImpl() {
 
     ALOGD("Camera %s: Shutting down", TClientBase::mCameraIdStr.string());
 
-    // Before detaching the device, cache the info from current open session.
-    // The disconnected check avoids duplication of info and also prevents
-    // deadlock while acquiring service lock in cacheDump.
-    if (!TClientBase::mDisconnected) {
-        ALOGD("Camera %s: start to cacheDump", TClientBase::mCameraIdStr.string());
-        Camera2ClientBase::getCameraService()->cacheDump();
-    }
-
     detachDevice();
 
     CameraService::BasicClient::disconnect();
@@ -342,6 +335,29 @@ void Camera2ClientBase<TClientBase>::notifyError(
 }
 
 template <typename TClientBase>
+void Camera2ClientBase<TClientBase>::notifyPhysicalCameraChange(const std::string &physicalId) {
+    // We're only interested in this notification if overrideToPortrait is turned on.
+    if (!TClientBase::mOverrideToPortrait) {
+        return;
+    }
+
+    String8 physicalId8(physicalId.c_str());
+    auto physicalCameraMetadata = mDevice->infoPhysical(physicalId8);
+    auto orientationEntry = physicalCameraMetadata.find(ANDROID_SENSOR_ORIENTATION);
+
+    if (orientationEntry.count == 1) {
+        int orientation = orientationEntry.data.i32[0];
+        int rotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_NONE;
+
+        if (orientation == 0 || orientation == 180) {
+            rotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_90;
+        }
+
+        static_cast<TClientBase *>(this)->setRotateAndCropOverride(rotateAndCropMode);
+    }
+}
+
+template <typename TClientBase>
 status_t Camera2ClientBase<TClientBase>::notifyActive(float maxPreviewFps) {
     if (!mDeviceActive) {
         status_t res = TClientBase::startCameraStreamingOps();
@@ -379,50 +395,38 @@ void Camera2ClientBase<TClientBase>::notifyIdleWithUserTag(
 }
 
 template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyShutter(const CaptureResultExtras& resultExtras,
-                                                   nsecs_t timestamp) {
-    (void)resultExtras;
-    (void)timestamp;
-
+void Camera2ClientBase<TClientBase>::notifyShutter(
+                [[maybe_unused]] const CaptureResultExtras& resultExtras,
+                [[maybe_unused]] nsecs_t timestamp) {
     ALOGV("%s: Shutter notification for request id %" PRId32 " at time %" PRId64,
             __FUNCTION__, resultExtras.requestId, timestamp);
 }
 
 template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyAutoFocus(uint8_t newState,
-                                                     int triggerId) {
-    (void)newState;
-    (void)triggerId;
-
+void Camera2ClientBase<TClientBase>::notifyAutoFocus([[maybe_unused]] uint8_t newState,
+                                                     [[maybe_unused]] int triggerId) {
     ALOGV("%s: Autofocus state now %d, last trigger %d",
           __FUNCTION__, newState, triggerId);
 
 }
 
 template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyAutoExposure(uint8_t newState,
-                                                        int triggerId) {
-    (void)newState;
-    (void)triggerId;
-
+void Camera2ClientBase<TClientBase>::notifyAutoExposure([[maybe_unused]] uint8_t newState,
+                                                        [[maybe_unused]] int triggerId) {
     ALOGV("%s: Autoexposure state now %d, last trigger %d",
             __FUNCTION__, newState, triggerId);
 }
 
 template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyAutoWhitebalance(uint8_t newState,
-                                                            int triggerId) {
-    (void)newState;
-    (void)triggerId;
-
+void Camera2ClientBase<TClientBase>::notifyAutoWhitebalance(
+                [[maybe_unused]] uint8_t newState,
+                [[maybe_unused]] int triggerId) {
     ALOGV("%s: Auto-whitebalance state now %d, last trigger %d",
             __FUNCTION__, newState, triggerId);
 }
 
 template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyPrepared(int streamId) {
-    (void)streamId;
-
+void Camera2ClientBase<TClientBase>::notifyPrepared([[maybe_unused]] int streamId) {
     ALOGV("%s: Stream %d now prepared",
             __FUNCTION__, streamId);
 }
@@ -434,9 +438,8 @@ void Camera2ClientBase<TClientBase>::notifyRequestQueueEmpty() {
 }
 
 template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyRepeatingRequestError(long lastFrameNumber) {
-    (void)lastFrameNumber;
-
+void Camera2ClientBase<TClientBase>::notifyRepeatingRequestError(
+            [[maybe_unused]] long lastFrameNumber) {
     ALOGV("%s: Repeating request was stopped. Last frame number is %ld",
             __FUNCTION__, lastFrameNumber);
 }

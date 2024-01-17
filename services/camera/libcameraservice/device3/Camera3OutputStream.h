@@ -160,6 +160,11 @@ class Camera3OutputStream :
     bool isConsumedByHWTexture() const;
 
     /**
+     * Return if this output stream is consumed by CPU.
+     */
+    bool isConsumedByCPU() const;
+
+    /**
      * Return if the consumer configuration of this stream is deferred.
      */
     virtual bool isConsumerConfigurationDeferred(size_t surface_id) const;
@@ -182,18 +187,10 @@ class Camera3OutputStream :
             virtual bool needsReleaseNotify() { return mNeedsReleaseNotify; }
             virtual void onBuffersDiscarded(const std::vector<sp<GraphicBuffer>>& buffers);
 
-        protected:
+        private:
             wp<Camera3OutputStream> mParent;
             bool mNeedsReleaseNotify;
     };
-
-    // MIUI ADD: START
-    class BufferProducerDetachListener : public BufferProducerListener {
-        public:
-            BufferProducerDetachListener(wp<Camera3OutputStream> parent, bool needsReleaseNotify) : BufferProducerListener(parent, needsReleaseNotify) {}
-            virtual void onBufferDetached(int buffer);
-    };
-    // MIUI ADD: END
 
     virtual status_t detachBuffer(sp<GraphicBuffer>* buffer, int* fenceFd);
 
@@ -254,6 +251,11 @@ class Camera3OutputStream :
      * frame rate.
      */
     virtual void onMinDurationChanged(nsecs_t duration, bool fixedFps) override;
+
+    /**
+     * Modify stream use case
+     */
+    virtual void setStreamUseCase(int64_t streamUseCase) override;
 
     /**
      * Apply ZSL related consumer usage quirk.
@@ -344,6 +346,11 @@ class Camera3OutputStream :
      * setting.
      */
     nsecs_t mTimestampOffset;
+
+    /**
+     * If camera readout time is used rather than the start-of-exposure time.
+     */
+    bool mUseReadoutTime;
 
     /**
      * Consumer end point usage flag set by the constructor for the deferred

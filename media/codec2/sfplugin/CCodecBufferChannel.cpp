@@ -25,7 +25,6 @@
 #include <atomic>
 #include <list>
 #include <numeric>
-#include <regex>
 
 #include <C2AllocatorGralloc.h>
 #include <C2PlatformSupport.h>
@@ -81,10 +80,6 @@ constexpr size_t kRenderingDepth = 3;
 // This is for keeping IGBP's buffer dropping logic in legacy mode other
 // than making it non-blocking. Do not change this value.
 const static size_t kDequeueTimeoutNs = 0;
-// If app goes into background, decoding paused. we have WA logic in HAL to sleep some actions.
-// This value is to monitor if decoding is paused then we can signal a new empty work to HAL
-// after app resume to foreground to notify HAL something
-const static uint64_t kPipelinePausedTimeoutMs = 500;
 
 }  // namespace
 
@@ -154,15 +149,7 @@ CCodecBufferChannel::CCodecBufferChannel(
       mFirstValidFrameIndex(0u),
       mMetaMode(MODE_NONE),
       mInputMetEos(false),
-      mLastInputBufferAvailableTs(0u),
       mSendEncryptedInfoBuffer(false) {
-    char board_platform[PROPERTY_VALUE_MAX];
-    property_get("ro.board.platform", board_platform, "");
-    mNeedEmptyWork = false;
-    if (!strncmp(board_platform, "lahaina", 7)) {
-        mNeedEmptyWork = true;
-        ALOGV("CCodecBufferChannel: going to queue empty work for lahaina.");
-    }
     mOutputSurface.lock()->maxDequeueBuffers = kSmoothnessFactor + kRenderingDepth;
     {
         Mutexed<Input>::Locked input(mInput);
@@ -716,40 +703,13 @@ status_t CCodecBufferChannel::queueSecureInputBuffer(
     return queueInputBufferInternal(buffer, block, bufferSize);
 }
 
-void CCodecBufferChannel::queueDummyWork() {
-    std::unique_ptr<C2Work> work(new C2Work);
-    // WA: signal a empty work to HAL to trigger specific event, but totally drop the work
-    work->input.flags = C2FrameData::FLAG_DROP_FRAME;
-    std::list<std::unique_ptr<C2Work>> items;
-    items.push_back(std::move(work));
-    (void)mComponent->queue(&items);
-}
-
 void CCodecBufferChannel::feedInputBufferIfAvailable() {
     QueueGuard guard(mSync);
     if (!guard.isRunning()) {
         ALOGV("[%s] We're not running --- no input buffer reported", mName);
         return;
     }
-
     feedInputBufferIfAvailableInternal();
-
-    // limit this WA to qc hw decoder only
-    // if feedInputBufferIfAvailableInternal() successfully (has available input buffer),
-    // mLastInputBufferAvailableTs would be updated. otherwise, not input buffer available
-    if (mNeedEmptyWork) {
-        std::regex pattern{"c2\\.qti\\..*\\.decoder.*"};
-        if (std::regex_match(mComponentName, pattern)) {
-            std::lock_guard<std::mutex> tsLock(mTsLock);
-            uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    PipelineWatcher::Clock::now().time_since_epoch()).count();
-            if (now - mLastInputBufferAvailableTs > kPipelinePausedTimeoutMs) {
-                ALOGV("long time elapsed since last input available, let's queue a specific work to "
-                        "HAL to notify something");
-                queueDummyWork();
-            }
-        }
-    }
 }
 
 void CCodecBufferChannel::feedInputBufferIfAvailableInternal() {
@@ -779,13 +739,6 @@ void CCodecBufferChannel::feedInputBufferIfAvailableInternal() {
                 break;
             }
         }
-
-        {
-            std::lock_guard<std::mutex> tsLock(mTsLock);
-            mLastInputBufferAvailableTs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    PipelineWatcher::Clock::now().time_since_epoch()).count();
-        }
-
         ALOGV("[%s] new input index = %zu [%p]", mName, index, inBuffer.get());
         mCallback->onInputBufferAvailable(index, inBuffer);
     }
@@ -1519,7 +1472,8 @@ status_t CCodecBufferChannel::start(
         watcher->inputDelay(inputDelayValue)
                 .pipelineDelay(pipelineDelayValue)
                 .outputDelay(outputDelayValue)
-                .smoothnessFactor(kSmoothnessFactor);
+                .smoothnessFactor(kSmoothnessFactor)
+                .tunneled(mTunneled);
         watcher->flush();
     }
 
@@ -1613,14 +1567,6 @@ status_t CCodecBufferChannel::requestInitialInputBuffers(
         clientInputBuffers.erase(minIndex);
     }
 
-    if (mNeedEmptyWork && !clientInputBuffers.empty()) {
-        {
-            std::lock_guard<std::mutex> tsLock(mTsLock);
-            mLastInputBufferAvailableTs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    PipelineWatcher::Clock::now().time_since_epoch()).count();
-        }
-    }
-
     for (const auto &[index, buffer] : clientInputBuffers) {
         mCallback->onInputBufferAvailable(index, buffer);
     }
@@ -1633,14 +1579,22 @@ void CCodecBufferChannel::stop() {
     mFirstValidFrameIndex = mFrameIndex.load(std::memory_order_relaxed);
 }
 
-void CCodecBufferChannel::stopUseOutputSurface() {
-    if (mOutputSurface.lock()->surface) {
+void CCodecBufferChannel::stopUseOutputSurface(bool pushBlankBuffer) {
+    sp<Surface> surface = mOutputSurface.lock()->surface;
+    if (surface) {
         C2BlockPool::local_id_t outputPoolId;
         {
             Mutexed<BlockPools>::Locked pools(mBlockPools);
             outputPoolId = pools->outputPoolId;
         }
         if (mComponent) mComponent->stopUsingOutputSurface(outputPoolId);
+
+        if (pushBlankBuffer) {
+            sp<ANativeWindow> anw = static_cast<ANativeWindow *>(surface.get());
+            if (anw) {
+                pushBlankBuffersToNativeWindow(anw.get());
+            }
+        }
     }
 }
 
@@ -1779,9 +1733,6 @@ bool CCodecBufferChannel::handleWork(
 
     if (work->result == C2_OK){
         notifyClient = true;
-    } else if (mNeedEmptyWork && work->result == C2_OMITTED) {
-        ALOGV("[%s] empty work returned; omitted.", mName);
-        return false; // omitted
     } else if (work->result == C2_NOT_FOUND) {
         ALOGD("[%s] flushed work; ignored.", mName);
     } else {
@@ -1929,6 +1880,7 @@ bool CCodecBufferChannel::handleWork(
             newInputDelay.value_or(input->inputDelay) +
             newPipelineDelay.value_or(input->pipelineDelay) +
             kSmoothnessFactor;
+        input->inputDelay = newInputDelay.value_or(input->inputDelay);
         if (input->buffers->isArrayMode()) {
             if (input->numSlots >= newNumSlots) {
                 input->numExtraSlots = 0;
@@ -2023,7 +1975,10 @@ bool CCodecBufferChannel::handleWork(
     // csd cannot be re-ordered and will always arrive first.
     if (initData != nullptr) {
         Mutexed<Output>::Locked output(mOutput);
-        if (output->buffers && outputFormat) {
+        if (!output->buffers) {
+            return false;
+        }
+        if (outputFormat) {
             output->buffers->updateSkipCutBuffer(outputFormat);
             output->buffers->setFormat(outputFormat);
         }
@@ -2032,7 +1987,7 @@ bool CCodecBufferChannel::handleWork(
         }
         size_t index;
         sp<MediaCodecBuffer> outBuffer;
-        if (output->buffers && output->buffers->registerCsd(initData, &index, &outBuffer) == OK) {
+        if (output->buffers->registerCsd(initData, &index, &outBuffer) == OK) {
             outBuffer->meta()->setInt64("timeUs", timestamp.peek());
             outBuffer->meta()->setInt32("flags", BUFFER_FLAG_CODEC_CONFIG);
             ALOGV("[%s] onWorkDone: csd index = %zu [%p]", mName, index, outBuffer.get());
@@ -2155,14 +2110,20 @@ void CCodecBufferChannel::sendOutputBuffers() {
     }
 }
 
-status_t CCodecBufferChannel::setSurface(const sp<Surface> &newSurface) {
+status_t CCodecBufferChannel::setSurface(const sp<Surface> &newSurface, bool pushBlankBuffer) {
     static std::atomic_uint32_t surfaceGeneration{0};
     uint32_t generation = (getpid() << 10) |
             ((surfaceGeneration.fetch_add(1, std::memory_order_relaxed) + 1)
                 & ((1 << 10) - 1));
 
     sp<IGraphicBufferProducer> producer;
-    int maxDequeueCount = mOutputSurface.lock()->maxDequeueBuffers;
+    int maxDequeueCount;
+    sp<Surface> oldSurface;
+    {
+        Mutexed<OutputSurface>::Locked outputSurface(mOutputSurface);
+        maxDequeueCount = outputSurface->maxDequeueBuffers;
+        oldSurface = outputSurface->surface;
+    }
     if (newSurface) {
         newSurface->setScalingMode(NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW);
         newSurface->setDequeueTimeout(kDequeueTimeoutNs);
@@ -2197,6 +2158,15 @@ status_t CCodecBufferChannel::setSurface(const sp<Surface> &newSurface) {
         Mutexed<OutputSurface>::Locked output(mOutputSurface);
         output->surface = newSurface;
         output->generation = generation;
+    }
+
+    if (oldSurface && pushBlankBuffer) {
+        // When ReleaseSurface was set from MediaCodec,
+        // pushing a blank buffer at the end might be necessary.
+        sp<ANativeWindow> anw = static_cast<ANativeWindow *>(oldSurface.get());
+        if (anw) {
+            pushBlankBuffersToNativeWindow(anw.get());
+        }
     }
 
     return OK;
@@ -2286,15 +2256,6 @@ status_t toStatusT(c2_status_t c2s, c2_operation_t c2op) {
     default:
         return -static_cast<status_t>(c2s);
     }
-}
-
-status_t CCodecBufferChannel::pushBlankBufferToOutputSurface() {
-  Mutexed<OutputSurface>::Locked output(mOutputSurface);
-  sp<ANativeWindow> nativeWindow = static_cast<ANativeWindow *>(output->surface.get());
-  if (nativeWindow == nullptr) {
-      return INVALID_OPERATION;
-  }
-  return pushBlankBuffersToNativeWindow(nativeWindow.get());
 }
 
 }  // namespace android

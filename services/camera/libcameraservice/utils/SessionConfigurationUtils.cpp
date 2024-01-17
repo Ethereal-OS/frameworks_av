@@ -127,7 +127,7 @@ camera3::Size getMaxJpegResolution(const CameraMetadata &metadata,
 
 size_t getUHRMaxJpegBufferSize(camera3::Size uhrMaxJpegSize,
         camera3::Size defaultMaxJpegSize, size_t defaultMaxJpegBufferSize) {
-    return ((float)(uhrMaxJpegSize.width * uhrMaxJpegSize.height)) /
+    return ((float)uhrMaxJpegSize.width * uhrMaxJpegSize.height) /
             (defaultMaxJpegSize.width * defaultMaxJpegSize.height) * defaultMaxJpegBufferSize;
 }
 
@@ -214,11 +214,10 @@ bool roundBufferDimensionNearest(int32_t width, int32_t height,
     // Avoid roundBufferDimensionsNearest for privileged client YUV streams to meet the AIDE2
     // requirement. AIDE2 is vendor enhanced feature which requires special resolutions and
     // those are not populated in static capabilities.
-    if (isPriviledgedClient == true &&
-        (format == HAL_PIXEL_FORMAT_YCbCr_420_888 || format == HAL_PIXEL_FORMAT_BLOB)) {
+    if (isPriviledgedClient == true && format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
         ALOGI("Bypass roundBufferDimensionNearest for privilegedClient YUV streams "
-              "width %d height %d for format %d",
-              width, height, format);
+              "width %d height %d",
+              width, height);
 
         bestWidth  = width;
         bestHeight = height;
@@ -491,7 +490,7 @@ binder::Status createSurfaceFromGbp(
         return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (timestampBase < OutputConfiguration::TIMESTAMP_BASE_DEFAULT ||
-            timestampBase > OutputConfiguration::TIMESTAMP_BASE_CHOREOGRAPHER_SYNCED) {
+            timestampBase > OutputConfiguration::TIMESTAMP_BASE_MAX) {
         String8 msg = String8::format("Camera %s: invalid timestamp base %d",
                 logicalCameraId.string(), timestampBase);
         ALOGE("%s: %s", __FUNCTION__, msg.string());

@@ -699,10 +699,10 @@ public:
     Status setRequestedLatencyMode(int output, media::LatencyMode mode) override;
     Status getSupportedLatencyModes(int output,
             std::vector<media::LatencyMode>* _aidl_return) override;
-
     Status setAppVolume(const std::string& packageName, const float value) override;
     Status setAppMute(const std::string& packageName, const bool value) override;
     Status listAppVolumes(std::vector<media::AppVolumeData> *vols) override;
+
 private:
     const sp<AudioFlingerServerAdapter::Delegate> mDelegate;
 };

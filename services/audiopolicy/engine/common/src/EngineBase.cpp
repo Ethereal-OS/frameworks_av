@@ -24,9 +24,7 @@
 #include "EngineBase.h"
 #include "EngineDefaultConfig.h"
 #include <TypeConverter.h>
-#include <cutils/properties.h>
 
-static const bool kSupportOdm = property_get_bool("ro.vendor.audio.policy.engine.odm", false );
 namespace android {
 namespace audio_policy {
 
@@ -165,29 +163,8 @@ engineConfig::ParsingResult EngineBase::loadAudioPolicyEngineConfig()
         return stat(path, &fileStat) == 0 && S_ISREG(fileStat.st_mode);
     };
 
-//Platform loading xml file path differentiation
-    char DEFAULT_PATH_ODM[] = "/odm/etc/audio_policy_engine_configuration_mi.xml";
-    char DEFAULT_PATH_MARS[] = "/vendor/etc/audio_policy_engine_configuration_mars.xml";
-    bool isMars = false;
-    char product[PROPERTY_VALUE_MAX] = {0};
-    property_get("ro.boot.product.hardware.sku", product, NULL);
-    if (strncmp(product,"mars", 4) == 0)
-      isMars = true;
-
-    auto result = engineConfig::ParsingResult{};
-    if(kSupportOdm){
-      if(fileExists(DEFAULT_PATH_ODM))
-        result = engineConfig::parse(DEFAULT_PATH_ODM);
-    } else if(isMars){
-      if(fileExists(DEFAULT_PATH_MARS))
-        result = engineConfig::parse(DEFAULT_PATH_MARS);
-    }else{
-      if(fileExists(engineConfig::DEFAULT_PATH))
-        result = engineConfig::parse(engineConfig::DEFAULT_PATH);
-    }
-
-    //auto result = fileExists(engineConfig::DEFAULT_PATH) ?
-            //engineConfig::parse(engineConfig::DEFAULT_PATH) : engineConfig::ParsingResult{};
+    auto result = fileExists(engineConfig::DEFAULT_PATH) ?
+            engineConfig::parse(engineConfig::DEFAULT_PATH) : engineConfig::ParsingResult{};
     if (result.parsedConfig == nullptr) {
         ALOGD("%s: No configuration found, using default matching phone experience.", __FUNCTION__);
         engineConfig::Config config = gDefaultEngineConfig;
@@ -648,6 +625,26 @@ DeviceVector EngineBase::getActiveMediaDevices(const DeviceVector& availableDevi
         }
     }
     return activeDevices;
+}
+
+void EngineBase::initializeDeviceSelectionCache() {
+    // Initializing the device selection cache with default device won't be harmful, it will be
+    // updated after the audio modules are initialized.
+    auto defaultDevices = DeviceVector(getApmObserver()->getDefaultOutputDevice());
+    for (const auto &iter : getProductStrategies()) {
+        const auto &strategy = iter.second;
+        mDevicesForStrategies[strategy->getId()] = defaultDevices;
+        setStrategyDevices(strategy, defaultDevices);
+    }
+}
+
+void EngineBase::updateDeviceSelectionCache() {
+    for (const auto &iter : getProductStrategies()) {
+        const auto& strategy = iter.second;
+        auto devices = getDevicesForProductStrategy(strategy->getId());
+        mDevicesForStrategies[strategy->getId()] = devices;
+        setStrategyDevices(strategy, devices);
+    }
 }
 
 void EngineBase::dumpCapturePresetDevicesRoleMap(String8 *dst, int spaces) const

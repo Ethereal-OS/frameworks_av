@@ -80,10 +80,6 @@ static int32_t getColorFormat(const char* colorFormat) {
         return OMX_COLOR_FormatAndroidOpaque;
     }
 
-    if (!strcmp(colorFormat, "YVU420SemiPlanar")) {
-        return OMX_QCOM_COLOR_FormatYVU420SemiPlanar;
-    }
-
     ALOGE("Uknown color format (%s), please add it to "
          "CameraSource::getColorFormat", colorFormat);
 
@@ -154,7 +150,8 @@ status_t CameraSource::isCameraAvailable(
 
     if (camera == 0) {
         mCamera = Camera::connect(cameraId, clientName, clientUid, clientPid,
-                /*targetSdkVersion*/__ANDROID_API_FUTURE__);
+                /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*overrideToPortrait*/false,
+                /*forceSlowJpegMode*/false);
         if (mCamera == 0) return -EBUSY;
         mCameraFlags &= ~FLAGS_HOT_CAMERA;
     } else {

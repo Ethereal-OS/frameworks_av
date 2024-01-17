@@ -82,7 +82,8 @@ class Camera3Device :
   friend class AidlCamera3Device;
   public:
 
-    explicit Camera3Device(const String8& id, bool overrideForPerfClass, bool legacyClient = false);
+    explicit Camera3Device(const String8& id, bool overrideForPerfClass, bool overrideToPortrait,
+            bool legacyClient = false);
 
     virtual ~Camera3Device();
     // Delete and optionally close native handles and clear the input vector afterward
@@ -285,6 +286,13 @@ class Camera3Device :
      * Enables/disables camera service watchdog
      */
     status_t setCameraServiceWatchdog(bool enabled);
+
+    // Set stream use case overrides
+    void setStreamUseCaseOverrides(
+            const std::vector<int64_t>& useCaseOverrides);
+
+    // Clear stream use case overrides
+    void clearStreamUseCaseOverrides();
 
     // Get the status trackeer for the camera device
     wp<camera3::StatusTracker> getStatusTracker() { return mStatusTracker; }
@@ -573,6 +581,9 @@ class Camera3Device :
         // overriding of ROTATE_AND_CROP value and adjustment of coordinates
         // in several other controls in both the request and the result
         bool                                mRotateAndCropAuto;
+        // Indicates that the ROTATE_AND_CROP value within 'mSettingsList' was modified
+        // irrespective of the original value.
+        bool                                mRotateAndCropChanged = false;
 
         // Whether this capture request has its zoom ratio set to 1.0x before
         // the framework overrides it for camera HAL consumption.
@@ -621,6 +632,15 @@ class Camera3Device :
      * Must be called with mLock and mInterfaceLock held.
      */
     status_t initializeCommonLocked();
+
+    /**
+     * Update capture request list so that each batch size honors the batch_size_max report from
+     * the HAL.
+     *
+     * Must be called with mLock held.
+     */
+    size_t applyMaxBatchSizeLocked(RequestList* requestList,
+                                   sp<camera3::Camera3OutputStreamInterface> stream);
 
     /**
      * Get the last request submitted to the hal by the request thread.
@@ -759,6 +779,11 @@ class Camera3Device :
      */
     static nsecs_t getMonoToBoottimeOffset();
 
+    // Override rotate_and_crop control if needed
+    static bool    overrideAutoRotateAndCrop(const sp<CaptureRequest> &request /*out*/,
+            bool overrideToPortrait,
+            camera_metadata_enum_android_scaler_rotate_and_crop_t rotateAndCropOverride);
+
     struct RequestTrigger {
         // Metadata tag number, e.g. android.control.aePrecaptureTrigger
         uint32_t metadataTag;
@@ -788,7 +813,8 @@ class Camera3Device :
                 sp<HalInterface> interface,
                 const Vector<int32_t>& sessionParamKeys,
                 bool useHalBufManager,
-                bool supportCameraMute);
+                bool supportCameraMute,
+                bool overrideToPortrait);
         ~RequestThread();
 
         void     setNotificationListener(wp<NotificationListener> listener);
@@ -911,7 +937,7 @@ class Camera3Device :
         status_t           addFakeTriggerIds(const sp<CaptureRequest> &request);
 
         // Override rotate_and_crop control if needed; returns true if the current value was changed
-        bool               overrideAutoRotateAndCrop(const sp<CaptureRequest> &request);
+        bool               overrideAutoRotateAndCrop(const sp<CaptureRequest> &request /*out*/);
 
         // Override test_pattern control if needed for camera mute; returns true
         // if the current value was changed
@@ -1068,6 +1094,7 @@ class Camera3Device :
 
         const bool         mUseHalBufManager;
         const bool         mSupportCameraMute;
+        const bool         mOverrideToPortrait;
     };
 
     virtual sp<RequestThread> createNewRequestThread(wp<Camera3Device> /*parent*/,
@@ -1075,7 +1102,8 @@ class Camera3Device :
                 sp<HalInterface> /*interface*/,
                 const Vector<int32_t>& /*sessionParamKeys*/,
                 bool /*useHalBufManager*/,
-                bool /*supportCameraMute*/) = 0;
+                bool /*supportCameraMute*/,
+                bool /*overrideToPortrait*/) = 0;
 
     sp<RequestThread> mRequestThread;
 
@@ -1345,6 +1373,15 @@ class Camera3Device :
     // performance class.
     bool mOverrideForPerfClass;
 
+    // Whether the camera framework overrides the device characteristics for
+    // app compatibility reasons.
+    bool mOverrideToPortrait;
+    camera_metadata_enum_android_scaler_rotate_and_crop_t mRotateAndCropOverride;
+    bool mComposerOutput;
+
+    // Current active physical id of the logical multi-camera, if any
+    std::string mActivePhysicalId;
+
     // The current minimum expected frame duration based on AE_TARGET_FPS_RANGE
     nsecs_t mMinExpectedDuration = 0;
     // Whether the camera device runs at fixed frame rate based on AE_MODE and
@@ -1432,6 +1469,8 @@ class Camera3Device :
             createCamera3DeviceInjectionMethods(wp<Camera3Device>) = 0;
 
     sp<Camera3DeviceInjectionMethods> mInjectionMethods;
+
+    void overrideStreamUseCaseLocked();
 
 }; // class Camera3Device
 

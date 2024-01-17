@@ -273,13 +273,19 @@ DeviceVector Engine::getDevicesForStrategyInt(legacy_strategy strategy,
         break;
 
     case STRATEGY_PHONE: {
-        devices = availableOutputDevices.getDevicesFromType(AUDIO_DEVICE_OUT_HEARING_AID);
-        if (!devices.isEmpty()) break;
+        // TODO(b/243670205): remove this logic that gives preference to last removable devices
+        // once a UX decision has been made
         devices = availableOutputDevices.getFirstDevicesFromTypes(
-                        getLastRemovableMediaDevices(GROUP_NONE, {AUDIO_DEVICE_OUT_BLE_HEADSET}));
+                        getLastRemovableMediaDevices(GROUP_NONE, {
+                            // excluding HEARING_AID and BLE_HEADSET because Dialer uses
+                            // setCommunicationDevice to select them explicitly
+                            AUDIO_DEVICE_OUT_HEARING_AID,
+                            AUDIO_DEVICE_OUT_BLE_HEADSET
+                            }));
         if (!devices.isEmpty()) break;
         devices = availableOutputDevices.getFirstDevicesFromTypes({
-                AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET, AUDIO_DEVICE_OUT_EARPIECE});
+                AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET, AUDIO_DEVICE_OUT_EARPIECE,
+                AUDIO_DEVICE_OUT_SPEAKER});
     } break;
 
     case STRATEGY_SONIFICATION:
@@ -291,7 +297,9 @@ DeviceVector Engine::getDevicesForStrategyInt(legacy_strategy strategy,
 
         if ((strategy == STRATEGY_SONIFICATION) ||
                 (getForceUse(AUDIO_POLICY_FORCE_FOR_SYSTEM) == AUDIO_POLICY_FORCE_SYSTEM_ENFORCED)) {
-            devices = availableOutputDevices.getDevicesFromType(AUDIO_DEVICE_OUT_SPEAKER);
+            // favor dock over speaker when available
+            devices = availableOutputDevices.getFirstDevicesFromTypes({
+                    AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET, AUDIO_DEVICE_OUT_SPEAKER});
         }
 
         // if SCO headset is connected and we are told to use it, play ringtone over
@@ -393,10 +401,6 @@ DeviceVector Engine::getDevicesForStrategyInt(legacy_strategy strategy,
                 (getForceUse(AUDIO_POLICY_FORCE_FOR_DOCK) == AUDIO_POLICY_FORCE_ANALOG_DOCK)) {
             devices2 = availableOutputDevices.getDevicesFromType(
                     AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET);
-        }
-        if ((devices2.isEmpty()) && (strategy != STRATEGY_SONIFICATION)) {
-            // no sonification on WFD sink
-            devices2 = availableOutputDevices.getDevicesFromType(AUDIO_DEVICE_OUT_PROXY);
         }
         if (devices2.isEmpty()) {
             devices2 = availableOutputDevices.getFirstDevicesFromTypes({
@@ -645,15 +649,9 @@ sp<DeviceDescriptor> Engine::getDeviceForInputSource(audio_source_t inputSource)
     return device;
 }
 
-void Engine::updateDeviceSelectionCache()
-{
-    for (const auto &iter : getProductStrategies()) {
-        const auto& strategy = iter.second;
-        auto devices = getDevicesForProductStrategy(strategy->getId());
-        mDevicesForStrategies[strategy->getId()] = devices;
-        strategy->setDeviceTypes(devices.types());
-        strategy->setDeviceAddress(devices.getFirstValidAddress().c_str());
-    }
+void Engine::setStrategyDevices(const sp<ProductStrategy>& strategy, const DeviceVector &devices) {
+    strategy->setDeviceTypes(devices.types());
+    strategy->setDeviceAddress(devices.getFirstValidAddress().c_str());
 }
 
 product_strategy_t Engine::getProductStrategyFromLegacy(legacy_strategy legacyStrategy) const {

@@ -521,27 +521,50 @@ void processCaptureResult(CaptureOutputStates& states, const camera_capture_resu
         if (result->partial_result != 0)
             request.resultExtras.partialResultCount = result->partial_result;
 
-        if ((result->result != nullptr) && !states.legacyClient) {
+        if (result->result != nullptr) {
             camera_metadata_ro_entry entry;
             auto ret = find_camera_metadata_ro_entry(result->result,
                     ANDROID_LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID, &entry);
             if ((ret == OK) && (entry.count > 0)) {
                 std::string physicalId(reinterpret_cast<const char *>(entry.data.u8));
-                auto deviceInfo = states.physicalDeviceInfoMap.find(physicalId);
-                if (deviceInfo != states.physicalDeviceInfoMap.end()) {
-                    auto orientation = deviceInfo->second.find(ANDROID_SENSOR_ORIENTATION);
-                    if (orientation.count > 0) {
-                        ret = CameraUtils::getRotationTransform(deviceInfo->second,
-                                OutputConfiguration::MIRROR_MODE_AUTO, &request.transform);
-                        if (ret != OK) {
-                            ALOGE("%s: Failed to calculate current stream transformation: %s (%d)",
-                                    __FUNCTION__, strerror(-ret), ret);
+                if (!states.activePhysicalId.empty() && physicalId != states.activePhysicalId) {
+                    states.listener->notifyPhysicalCameraChange(physicalId);
+                }
+                states.activePhysicalId = physicalId;
+
+                if (!states.legacyClient && !states.overrideToPortrait) {
+                    auto deviceInfo = states.physicalDeviceInfoMap.find(physicalId);
+                    if (deviceInfo != states.physicalDeviceInfoMap.end()) {
+                        auto orientation = deviceInfo->second.find(ANDROID_SENSOR_ORIENTATION);
+                        if (orientation.count > 0) {
+                            int32_t transform;
+                            ret = CameraUtils::getRotationTransform(deviceInfo->second,
+                                    OutputConfiguration::MIRROR_MODE_AUTO, &transform);
+                            if (ret == OK) {
+                                // It is possible for camera providers to return the capture
+                                // results after the processed frames. In such scenario, we will
+                                // not be able to set the output transformation before the frames
+                                // return back to the consumer for the current capture request
+                                // but we could still try and configure it for any future requests
+                                // that are still in flight. The assumption is that the physical
+                                // device id remains the same for the duration of the pending queue.
+                                for (size_t i = 0; i < states.inflightMap.size(); i++) {
+                                    auto &r = states.inflightMap.editValueAt(i);
+                                    if (r.requestTimeNs >= request.requestTimeNs) {
+                                        r.transform = transform;
+                                    }
+                                }
+                            } else {
+                                ALOGE("%s: Failed to calculate current stream transformation: %s "
+                                        "(%d)", __FUNCTION__, strerror(-ret), ret);
+                            }
+                        } else {
+                            ALOGE("%s: Physical device orientation absent!", __FUNCTION__);
                         }
                     } else {
-                        ALOGE("%s: Physical device orientation absent!", __FUNCTION__);
+                        ALOGE("%s: Physical device not found in device info map found!",
+                                __FUNCTION__);
                     }
-                } else {
-                    ALOGE("%s: Physical device not found in device info map found!", __FUNCTION__);
                 }
             }
         }
@@ -787,10 +810,12 @@ void returnAndRemovePendingOutputBuffers(bool useHalBufManager,
         SessionStatsBuilder& sessionStatsBuilder) {
     bool timestampIncreasing =
             !((request.zslCapture && request.stillCapture) || request.hasInputBuffer);
+    nsecs_t readoutTimestamp = request.resultExtras.hasReadoutTimestamp ?
+            request.resultExtras.readoutTimestamp : 0;
     returnOutputBuffers(useHalBufManager, listener,
             request.pendingOutputBuffers.array(),
             request.pendingOutputBuffers.size(),
-            request.shutterTimestamp, request.shutterReadoutTimestamp,
+            request.shutterTimestamp, readoutTimestamp,
             /*requested*/true, request.requestTimeNs, sessionStatsBuilder, timestampIncreasing,
             request.outputSurfaces, request.resultExtras,
             request.errorBufStrategy, request.transform);
@@ -852,7 +877,10 @@ void notifyShutter(CaptureOutputStates& states, const camera_shutter_msg_t &msg)
             }
 
             r.shutterTimestamp = msg.timestamp;
-            r.shutterReadoutTimestamp = msg.readout_timestamp;
+            if (msg.readout_timestamp_valid) {
+                r.resultExtras.hasReadoutTimestamp = true;
+                r.resultExtras.readoutTimestamp = msg.readout_timestamp;
+            }
             if (r.minExpectedDuration != states.minFrameDuration ||
                     r.isFixedFps != states.isFixedFps) {
                 for (size_t i = 0; i < states.outputStreams.size(); i++) {

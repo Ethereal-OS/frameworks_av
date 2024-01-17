@@ -442,8 +442,7 @@ hardware::Return<void> HidlProviderInfo::torchModeStatusChange(
 }
 
 void HidlProviderInfo::serviceDied(uint64_t cookie,
-        const wp<hidl::base::V1_0::IBase>& who) {
-    (void) who;
+        [[maybe_unused]] const wp<hidl::base::V1_0::IBase>& who) {
     ALOGI("Camera provider '%s' has died; removing it", mProviderInstance.c_str());
     if (cookie != mId) {
         ALOGW("%s: Unexpected serviceDied cookie %" PRIu64 ", expected %" PRIu32,
@@ -655,6 +654,11 @@ HidlProviderInfo::HidlDeviceInfo3::HidlDeviceInfo3(
         ALOGE("%s: Unable to override zoomRatio related tags: %s (%d)",
                 __FUNCTION__, strerror(-res), res);
     }
+    res = addReadoutTimestampTag(/*readoutTimestampSupported*/false);
+    if (OK != res) {
+        ALOGE("%s: Unable to add sensorReadoutTimestamp tag: %s (%d)",
+                __FUNCTION__, strerror(-res), res);
+    }
 
     camera_metadata_entry flashAvailable =
             mCameraCharacteristics.find(ANDROID_FLASH_INFO_AVAILABLE);
@@ -687,6 +691,11 @@ HidlProviderInfo::HidlDeviceInfo3::HidlDeviceInfo3(
     }
 
     mTorchStrengthLevel = 0;
+
+    if (!kEnableLazyHal) {
+        // Save HAL reference indefinitely
+        mSavedInterface = interface;
+    }
 
     queryPhysicalCameraIds();
 
@@ -748,13 +757,6 @@ HidlProviderInfo::HidlDeviceInfo3::HidlDeviceInfo3(
             }
         }
     }
-
-    if (!kEnableLazyHal) {
-        // Save HAL reference indefinitely
-        mSavedInterface = interface;
-    }
-
-
 }
 
 status_t HidlProviderInfo::HidlDeviceInfo3::setTorchMode(bool enabled) {
@@ -914,7 +916,8 @@ status_t HidlProviderInfo::convertToHALStreamCombinationAndCameraIdsLocked(
         bool overrideForPerfClass =
                 SessionConfigurationUtils::targetPerfClassPrimaryCamera(
                         perfClassPrimaryCameraIds, cameraId, targetSdkVersion);
-        res = mManager->getCameraCharacteristicsLocked(cameraId, overrideForPerfClass, &deviceInfo);
+        res = mManager->getCameraCharacteristicsLocked(cameraId, overrideForPerfClass, &deviceInfo,
+                /*overrideToPortrait*/false);
         if (res != OK) {
             return res;
         }
@@ -922,7 +925,7 @@ status_t HidlProviderInfo::convertToHALStreamCombinationAndCameraIdsLocked(
                 [this](const String8 &id, bool overrideForPerfClass) {
                     CameraMetadata physicalDeviceInfo;
                     mManager->getCameraCharacteristicsLocked(id.string(), overrideForPerfClass,
-                                                   &physicalDeviceInfo);
+                            &physicalDeviceInfo, /*overrideToPortrait*/false);
                     return physicalDeviceInfo;
                 };
         std::vector<std::string> physicalCameraIds;
